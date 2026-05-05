@@ -1,5 +1,9 @@
 # Clone
 
+[![CI](https://github.com/nicholasgasior/clone/actions/workflows/build.yml/badge.svg)](https://github.com/nicholasgasior/clone/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MSRV: 1.87](https://img.shields.io/badge/MSRV-1.87-orange.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.87.0.html)
+
 A lightweight Linux VMM built for multi-tenant shell hosting and high-density VM workloads. 25K lines of Rust, single binary, KVM-based.
 
 Clone boots a template VM once, then forks isolated copies via Shadow Clone page mapping. Idle VMs get reclaimed automatically. A host running 100 shells uses memory like it's running 10.
