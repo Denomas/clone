@@ -2,9 +2,13 @@
 name = "clone"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87"
 description = "Minimal VMM for multi-tenant dev shells and serverless"
 license = "MIT"
 authors = ["Unix Shells Limited Company"]
+homepage = "https://github.com/nicholasgasior/clone"
+repository = "https://github.com/nicholasgasior/clone"
+keywords = ["vmm", "kvm", "virtualization", "microvm", "serverless"]
 
 [dependencies]
 # async runtime
@@ -54,6 +58,12 @@ io_uring = ["io-uring"]
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
 
 [[bin]]
 name = "clone"

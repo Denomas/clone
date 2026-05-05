@@ -2,3 +2,9 @@
 .DS_Store
 /backup
 backup/
+
+# VM artifacts
+*.img
+*.qcow2
+*.mem
+/templates/

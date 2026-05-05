@@ -21,6 +21,7 @@
 #   CLONE=/path/to/clone    Override binary path
 
 .PHONY: all build build-debug test check fmt clippy \
+        ci lint deny audit \
         e2e e2e-quick e2e-boot e2e-snapshot e2e-storage e2e-security \
         e2e-migration e2e-devices e2e-multivm \
         initrd clean
@@ -50,6 +51,26 @@ fmt:
 
 clippy:
 	cargo clippy -- -D warnings
+
+# ── Auto-fix ────────────────────────────────────────────────────────────
+
+fix:
+	cargo fmt
+	cargo fix --allow-dirty --allow-staged
+	cargo clippy --fix --allow-dirty --allow-staged
+	cargo fmt
+
+# ── Shift-left targets ──────────────────────────────────────────────────
+
+ci: fmt clippy test
+
+lint: fmt clippy
+
+deny:
+	cargo deny check
+
+audit:
+	cargo audit
 
 # ── End-to-end tests ────────────────────────────────────────────────────
 # All e2e targets require: Linux, KVM (/dev/kvm), root (sudo), busybox-static
