@@ -7,7 +7,6 @@
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::Path;
 
 /// A kernel verifier that checks kernel binaries against expected SHA-256 hashes.
 #[derive(Debug)]
@@ -26,10 +25,7 @@ impl KernelVerifier {
     pub fn from_hex(hex: &str) -> Result<Self> {
         let bytes = hex_decode(hex).context("Invalid hex string for kernel hash")?;
         if bytes.len() != 32 {
-            anyhow::bail!(
-                "Expected 32-byte SHA-256 hash, got {} bytes",
-                bytes.len()
-            );
+            anyhow::bail!("Expected 32-byte SHA-256 hash, got {} bytes", bytes.len());
         }
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&bytes);
@@ -39,8 +35,7 @@ impl KernelVerifier {
     /// Read the kernel file, compute its SHA-256 hash, and verify it matches
     /// the expected hash. Returns the kernel bytes on success.
     pub fn verify_kernel(&self, path: &str) -> Result<Vec<u8>> {
-        let kernel_data = std::fs::read(path)
-            .with_context(|| format!("Failed to read kernel: {path}"))?;
+        let kernel_data = std::fs::read(path).with_context(|| format!("Failed to read kernel: {path}"))?;
 
         let actual_hash = compute_sha256(&kernel_data);
 
@@ -52,11 +47,7 @@ impl KernelVerifier {
             );
         }
 
-        tracing::info!(
-            "Kernel verified: {} (SHA-256: {})",
-            path,
-            hex_encode(&actual_hash),
-        );
+        tracing::info!("Kernel verified: {} (SHA-256: {})", path, hex_encode(&actual_hash),);
 
         Ok(kernel_data)
     }
@@ -93,11 +84,10 @@ pub struct TrustedManifest {
 /// The manifest is a JSON file containing a map of kernel names to their
 /// expected SHA-256 hashes, plus a signature field for future verification.
 pub fn load_trusted_hashes(manifest_path: &str) -> Result<TrustedManifest> {
-    let data = std::fs::read_to_string(manifest_path)
-        .with_context(|| format!("Failed to read manifest: {manifest_path}"))?;
+    let data =
+        std::fs::read_to_string(manifest_path).with_context(|| format!("Failed to read manifest: {manifest_path}"))?;
 
-    let manifest: TrustedManifest =
-        serde_json::from_str(&data).context("Failed to parse kernel manifest JSON")?;
+    let manifest: TrustedManifest = serde_json::from_str(&data).context("Failed to parse kernel manifest JSON")?;
 
     if manifest.hashes.is_empty() {
         anyhow::bail!("Kernel manifest contains no hashes");
@@ -144,15 +134,12 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 /// Decode a hex string into bytes.
 fn hex_decode(hex: &str) -> Result<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         anyhow::bail!("Hex string has odd length");
     }
     (0..hex.len())
         .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16)
-                .with_context(|| format!("Invalid hex at position {i}"))
-        })
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).with_context(|| format!("Invalid hex at position {i}")))
         .collect()
 }
 
@@ -164,10 +151,7 @@ mod tests {
     fn test_compute_sha256() {
         let hash = compute_sha256(b"hello world");
         let hex = hex_encode(&hash);
-        assert_eq!(
-            hex,
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        );
+        assert_eq!(hex, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
     }
 
     #[test]
@@ -286,10 +270,7 @@ mod tests {
         let hash = compute_sha256(b"");
         let hex = hex_encode(&hash);
         // Known SHA-256 of empty string
-        assert_eq!(
-            hex,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
+        assert_eq!(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     }
 
     #[test]

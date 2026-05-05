@@ -62,12 +62,16 @@ struct VsockHdr {
 
 impl VsockHdr {
     fn read_from(data: &[u8]) -> Option<Self> {
-        if data.len() < HDR_SIZE { return None; }
+        if data.len() < HDR_SIZE {
+            return None;
+        }
         Some(unsafe { std::ptr::read_unaligned(data.as_ptr() as *const Self) })
     }
 
     fn write_to(&self, data: &mut [u8]) -> usize {
-        if data.len() < HDR_SIZE { return 0; }
+        if data.len() < HDR_SIZE {
+            return 0;
+        }
         unsafe {
             std::ptr::write_unaligned(data.as_mut_ptr() as *mut Self, *self);
         }
@@ -88,7 +92,8 @@ struct VsockConn {
 
 impl VsockConn {
     fn peer_free(&self) -> u32 {
-        self.peer_buf_alloc.saturating_sub(self.tx_cnt.wrapping_sub(self.peer_fwd_cnt))
+        self.peer_buf_alloc
+            .saturating_sub(self.tx_cnt.wrapping_sub(self.peer_fwd_cnt))
     }
 }
 
@@ -168,12 +173,20 @@ impl VirtioVsock {
             libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK);
             // Increase socket buffer to avoid data loss on non-blocking writes
             let buf_size: libc::c_int = 256 * 1024;
-            libc::setsockopt(fds[0], libc::SOL_SOCKET, libc::SO_SNDBUF,
+            libc::setsockopt(
+                fds[0],
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
                 &buf_size as *const libc::c_int as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-            libc::setsockopt(fds[1], libc::SOL_SOCKET, libc::SO_RCVBUF,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            libc::setsockopt(
+                fds[1],
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
                 &buf_size as *const libc::c_int as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
         }
 
         #[cfg(target_os = "linux")]
@@ -246,6 +259,7 @@ impl VirtioVsock {
         unsafe { std::slice::from_raw_parts(self.gpa_to_ptr(gpa), len as usize) }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn guest_slice_mut(&self, gpa: u64, len: u64) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.gpa_to_ptr(gpa), len as usize) }
     }
@@ -290,7 +304,9 @@ impl VirtioVsock {
     fn write_used_idx(&self, qi: usize, idx: u16) {
         let qc = &self.queue_configs[qi];
         std::sync::atomic::fence(Ordering::Release);
-        unsafe { *(self.gpa_to_ptr(qc.used_addr + 2) as *mut u16) = idx; }
+        unsafe {
+            *(self.gpa_to_ptr(qc.used_addr + 2) as *mut u16) = idx;
+        }
     }
 
     // --- Packet building ---
@@ -339,7 +355,9 @@ impl VirtioVsock {
 
     fn process_tx(&mut self) {
         let qi = TX_QUEUE as usize;
-        if qi >= self.queue_configs.len() { return; }
+        if qi >= self.queue_configs.len() {
+            return;
+        }
 
         let avail_idx = self.read_avail_idx(qi);
         while self.last_avail[qi] != avail_idx {
@@ -396,8 +414,11 @@ impl VirtioVsock {
                 if self.device_fd >= 0 {
                     let mut drain = [0u8; 4096];
                     loop {
-                        let n = unsafe { libc::read(self.device_fd, drain.as_mut_ptr() as *mut libc::c_void, drain.len()) };
-                        if n <= 0 { break; }
+                        let n =
+                            unsafe { libc::read(self.device_fd, drain.as_mut_ptr() as *mut libc::c_void, drain.len()) };
+                        if n <= 0 {
+                            break;
+                        }
                     }
                 }
                 self.conn = Some(VsockConn {
@@ -432,7 +453,9 @@ impl VirtioVsock {
                                     payload.len() - written,
                                 )
                             };
-                            if n <= 0 { break; }
+                            if n <= 0 {
+                                break;
+                            }
                             written += n as usize;
                         }
                     }
@@ -455,10 +478,8 @@ impl VirtioVsock {
                     conn.peer_fwd_cnt = u32::from_le(hdr.fwd_cnt);
                 }
             }
-            OP_CREDIT_REQUEST => {
-                if self.conn.is_some() {
-                    self.enqueue_hdr(OP_CREDIT_UPDATE);
-                }
+            OP_CREDIT_REQUEST if self.conn.is_some() => {
+                self.enqueue_hdr(OP_CREDIT_UPDATE);
             }
             _ => {}
         }
@@ -468,7 +489,9 @@ impl VirtioVsock {
 
     fn process_rx(&mut self) {
         let qi = RX_QUEUE as usize;
-        if qi >= self.queue_configs.len() { return; }
+        if qi >= self.queue_configs.len() {
+            return;
+        }
 
         // Read any pending data from the agent unix socket.
         self.read_agent_data();
@@ -514,14 +537,10 @@ impl VirtioVsock {
 
         let mut buf = [0u8; 4096];
         loop {
-            let n = unsafe {
-                libc::read(
-                    self.device_fd,
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len(),
-                )
-            };
-            if n <= 0 { break; }
+            let n = unsafe { libc::read(self.device_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n <= 0 {
+                break;
+            }
 
             let data = &buf[..n as usize];
             let conn = self.conn.as_ref().unwrap();
@@ -557,8 +576,12 @@ impl VirtioVsock {
     /// Called during snapshot creation to close guest connections.
     pub fn send_transport_reset(&mut self) {
         let qi = _EVENT_QUEUE as usize;
-        if qi >= self.queue_configs.len() { return; }
-        if self.guest_mem.is_null() { return; }
+        if qi >= self.queue_configs.len() {
+            return;
+        }
+        if self.guest_mem.is_null() {
+            return;
+        }
 
         let avail_idx = self.read_avail_idx(qi);
         if self.last_avail[qi] == avail_idx {
@@ -635,12 +658,8 @@ impl VirtioDevice for VirtioVsock {
         // Initialize queue indices from guest memory.
         for (qi, qc) in queues.iter().enumerate() {
             if qi < NUM_QUEUES && !guest_mem.is_null() && qc.avail_addr != 0 {
-                let avail_idx = unsafe {
-                    *(self.gpa_to_ptr(qc.avail_addr + 2) as *const u16)
-                };
-                let used_idx = unsafe {
-                    *(self.gpa_to_ptr(qc.used_addr + 2) as *const u16)
-                };
+                let avail_idx = unsafe { *(self.gpa_to_ptr(qc.avail_addr + 2) as *const u16) };
+                let used_idx = unsafe { *(self.gpa_to_ptr(qc.used_addr + 2) as *const u16) };
                 self.last_used[qi] = used_idx;
                 if qi == TX_QUEUE as usize {
                     // TX: start from avail_idx to skip already-posted buffers.
@@ -665,14 +684,18 @@ impl VirtioDevice for VirtioVsock {
     }
 
     fn process_queue(&mut self, queue_index: u16) -> anyhow::Result<()> {
-        if !self.activated || self.guest_mem.is_null() { return Ok(()); }
+        if !self.activated || self.guest_mem.is_null() {
+            return Ok(());
+        }
 
         match queue_index {
             TX_QUEUE => {
                 self.process_tx();
                 // Also process RX to deliver any responses generated by TX.
                 self.process_rx();
-                if !self.pending_rx.is_empty() || self.last_used[TX_QUEUE as usize] != self.last_avail[TX_QUEUE as usize] {
+                if !self.pending_rx.is_empty()
+                    || self.last_used[TX_QUEUE as usize] != self.last_avail[TX_QUEUE as usize]
+                {
                     self.signal_guest();
                 } else {
                     // Always signal after TX/RX processing so guest sees used buffers.
@@ -695,7 +718,9 @@ impl VirtioDevice for VirtioVsock {
         false // device handles all queue processing internally
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn reset(&mut self) {
         self.acked_features_low = 0;
         self.acked_features_high = 0;
@@ -709,11 +734,14 @@ impl VirtioDevice for VirtioVsock {
             "guest_cid": self.guest_cid,
             "acked_features_low": self.acked_features_low,
             "acked_features_high": self.acked_features_high,
-        })).unwrap_or_default()
+        }))
+        .unwrap_or_default()
     }
 
     fn restore_state(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        if data.is_empty() { return Ok(()); }
+        if data.is_empty() {
+            return Ok(());
+        }
         let state: serde_json::Value = serde_json::from_slice(data)?;
         if let Some(v) = state.get("acked_features_low").and_then(|v| v.as_u64()) {
             self.acked_features_low = v as u32;
@@ -728,7 +756,11 @@ impl VirtioDevice for VirtioVsock {
 impl Drop for VirtioVsock {
     fn drop(&mut self) {
         for fd in [self.device_fd, self.host_fd, self.rx_eventfd] {
-            if fd >= 0 { unsafe { libc::close(fd); } }
+            if fd >= 0 {
+                unsafe {
+                    libc::close(fd);
+                }
+            }
         }
     }
 }
@@ -776,6 +808,8 @@ mod tests {
         let fd = dev.take_host_fd();
         assert!(fd >= 0);
         assert_eq!(dev.take_host_fd(), -1); // second call returns -1
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
     }
 }

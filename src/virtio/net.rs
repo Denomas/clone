@@ -10,7 +10,7 @@
 
 use std::os::unix::io::RawFd;
 
-use super::queue::{DescriptorChain, Virtqueue, VRING_DESC_F_WRITE, VRING_DESC_F_NEXT};
+use super::queue::{DescriptorChain, Virtqueue, VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
 use super::{DeviceType, QueueInfo, VirtioDevice};
 
 // --- Feature bits (virtio spec 5.1.3) ---
@@ -44,16 +44,18 @@ const VIRTIO_NET_HDR_SIZE: usize = 12;
 // --- vhost ioctl numbers (Linux) ---
 #[cfg(target_os = "linux")]
 mod vhost {
-    pub const SET_OWNER: libc::c_ulong = 0xAF01;
-    pub const GET_FEATURES: libc::c_ulong = 0x8008_AF00;
-    pub const SET_FEATURES: libc::c_ulong = 0x4008_AF00;
-    pub const SET_MEM_TABLE: libc::c_ulong = 0x4008_AF03;
-    pub const SET_VRING_NUM: libc::c_ulong = 0x4008_AF10;
-    pub const SET_VRING_ADDR: libc::c_ulong = 0x4028_AF11;
-    pub const SET_VRING_BASE: libc::c_ulong = 0x4008_AF12;
-    pub const SET_VRING_KICK: libc::c_ulong = 0x4008_AF20;
-    pub const SET_VRING_CALL: libc::c_ulong = 0x4008_AF21;
-    pub const NET_SET_BACKEND: libc::c_ulong = 0x4008_AF30;
+    use crate::compat::IoctlReq as Ioctl;
+
+    pub const SET_OWNER: Ioctl = 0xAF01u32 as Ioctl;
+    pub const GET_FEATURES: Ioctl = 0x8008_AF00u32 as Ioctl;
+    pub const SET_FEATURES: Ioctl = 0x4008_AF00u32 as Ioctl;
+    pub const SET_MEM_TABLE: Ioctl = 0x4008_AF03u32 as Ioctl;
+    pub const SET_VRING_NUM: Ioctl = 0x4008_AF10u32 as Ioctl;
+    pub const SET_VRING_ADDR: Ioctl = 0x4028_AF11u32 as Ioctl;
+    pub const SET_VRING_BASE: Ioctl = 0x4008_AF12u32 as Ioctl;
+    pub const SET_VRING_KICK: Ioctl = 0x4008_AF20u32 as Ioctl;
+    pub const SET_VRING_CALL: Ioctl = 0x4008_AF21u32 as Ioctl;
+    pub const NET_SET_BACKEND: Ioctl = 0x4008_AF30u32 as Ioctl;
 
     #[repr(C)]
     pub struct VringState {
@@ -124,7 +126,6 @@ pub struct VirtioNet {
     activated: bool,
 
     // --- vhost-net state ---
-
     /// KVM VM file descriptor (raw, borrowed — not owned).
     vm_fd: RawFd,
     /// IRQ number assigned by the MMIO bus.
@@ -212,14 +213,24 @@ impl VirtioNet {
     /// stale TAP for a fresh one and switch to userspace net processing.
     pub fn set_tap_fd(&mut self, fd: RawFd) {
         if self.vhost_fd >= 0 {
-            unsafe { libc::close(self.vhost_fd); }
+            unsafe {
+                libc::close(self.vhost_fd);
+            }
             self.vhost_fd = -1;
         }
         for &kfd in &self.kick_fds {
-            if kfd >= 0 { unsafe { libc::close(kfd); } }
+            if kfd >= 0 {
+                unsafe {
+                    libc::close(kfd);
+                }
+            }
         }
         for &cfd in &self.call_fds {
-            if cfd >= 0 { unsafe { libc::close(cfd); } }
+            if cfd >= 0 {
+                unsafe {
+                    libc::close(cfd);
+                }
+            }
         }
         self.kick_fds = [-1; 2];
         self.call_fds = [-1; 2];
@@ -272,28 +283,19 @@ impl VirtioNet {
 
         // 3. VHOST_GET_FEATURES then SET intersection with driver-negotiated features
         let mut vhost_features: u64 = 0;
-        if unsafe {
-            libc::ioctl(
-                vhost_fd,
-                vhost::GET_FEATURES,
-                &mut vhost_features as *mut u64,
-            )
-        } < 0
-        {
+        if unsafe { libc::ioctl(vhost_fd, vhost::GET_FEATURES, &mut vhost_features as *mut u64) } < 0 {
             return Err(anyhow::anyhow!(
                 "VHOST_GET_FEATURES failed: {}",
                 std::io::Error::last_os_error()
             ));
         }
 
-        let driver_features: u64 =
-            (self.acked_features_low as u64) | ((self.acked_features_high as u64) << 32);
+        let driver_features: u64 = (self.acked_features_low as u64) | ((self.acked_features_high as u64) << 32);
         // VHOST_NET_F_VIRTIO_NET_HDR (bit 27) is a vhost-specific feature
         // (not guest-visible) that tells vhost-net to prepend/strip the
         // virtio_net_hdr in RX/TX buffers. Always request it if supported.
         const VHOST_NET_F_VIRTIO_NET_HDR: u64 = 1 << 27;
-        let features =
-            (driver_features & vhost_features) | (vhost_features & VHOST_NET_F_VIRTIO_NET_HDR);
+        let features = (driver_features & vhost_features) | (vhost_features & VHOST_NET_F_VIRTIO_NET_HDR);
         tracing::info!(
             "vhost-net: features vhost={:#x} driver={:#x} negotiated={:#x}",
             vhost_features,
@@ -341,10 +343,7 @@ impl VirtioNet {
                     flags_padding: 0,
                 }],
             };
-            unsafe { libc::ioctl(vhost_fd,
-                vhost::SET_MEM_TABLE,
-                &mem_table as *const vhost::Memory,
-            ) }
+            unsafe { libc::ioctl(vhost_fd, vhost::SET_MEM_TABLE, &mem_table as *const vhost::Memory) }
         };
         if ret < 0 {
             return Err(anyhow::anyhow!(
@@ -354,14 +353,13 @@ impl VirtioNet {
         }
 
         // 5. Set up each queue (RX=0, TX=1)
-        let guest_mem_base = self.guest_mem as u64;
+        let _guest_mem_base = self.guest_mem as u64;
 
         for qi in 0..2u32 {
             let qc = &self.queue_configs[qi as usize];
 
             // Create kick eventfd (VMM signals vhost when guest kicks queue)
-            let kick_fd =
-                unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+            let kick_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
             if kick_fd < 0 {
                 return Err(anyhow::anyhow!(
                     "eventfd(kick) failed: {}",
@@ -423,10 +421,7 @@ impl VirtioNet {
             }
 
             // VHOST_SET_VRING_KICK
-            let kick = vhost::VringFile {
-                index: qi,
-                fd: kick_fd,
-            };
+            let kick = vhost::VringFile { index: qi, fd: kick_fd };
             if unsafe { libc::ioctl(vhost_fd, vhost::SET_VRING_KICK, &kick) } < 0 {
                 return Err(anyhow::anyhow!(
                     "VHOST_SET_VRING_KICK(q={qi}) failed: {}",
@@ -435,10 +430,7 @@ impl VirtioNet {
             }
 
             // VHOST_SET_VRING_CALL
-            let call = vhost::VringFile {
-                index: qi,
-                fd: call_fd,
-            };
+            let call = vhost::VringFile { index: qi, fd: call_fd };
             if unsafe { libc::ioctl(vhost_fd, vhost::SET_VRING_CALL, &call) } < 0 {
                 return Err(anyhow::anyhow!(
                     "VHOST_SET_VRING_CALL(q={qi}) failed: {}",
@@ -485,11 +477,7 @@ impl VirtioNet {
         if qi < 2 && self.kick_fds[qi] >= 0 {
             let val: u64 = 1;
             unsafe {
-                libc::write(
-                    self.kick_fds[qi],
-                    &val as *const u64 as *const libc::c_void,
-                    8,
-                );
+                libc::write(self.kick_fds[qi], &val as *const u64 as *const libc::c_void, 8);
             }
         }
     }
@@ -506,14 +494,20 @@ impl VirtioNet {
 
     /// Read an available RX descriptor index from the avail ring.
     fn rx_pop_avail(&self) -> Option<(u16, u16)> {
-        if self.guest_mem.is_null() || self.queue_configs.is_empty() { return None; }
+        if self.guest_mem.is_null() || self.queue_configs.is_empty() {
+            return None;
+        }
         let qc = &self.queue_configs[RX_QUEUE as usize];
-        if qc.avail_addr == 0 { return None; }
+        if qc.avail_addr == 0 {
+            return None;
+        }
         let avail_idx: u16 = unsafe { *(self.gpa_to_ptr(qc.avail_addr + 2) as *const u16) };
         let last = unsafe { *(self.gpa_to_ptr(qc.used_addr + 2) as *const u16) }; // used_idx = our "last consumed"
-        // Use a simple approach: use used_idx as our last_avail tracker
-        // (we always consume and immediately push to used)
-        if avail_idx == last { return None; }
+                                                                                  // Use a simple approach: use used_idx as our last_avail tracker
+                                                                                  // (we always consume and immediately push to used)
+        if avail_idx == last {
+            return None;
+        }
         let ring_idx = (last % qc.size) as u64;
         let desc_idx: u16 = unsafe { *(self.gpa_to_ptr(qc.avail_addr + 4 + ring_idx * 2) as *const u16) };
         Some((desc_idx, last))
@@ -539,27 +533,33 @@ impl VirtioNet {
         let qc = &self.queue_configs[RX_QUEUE as usize];
         let ptr = self.gpa_to_ptr(qc.desc_addr + idx as u64 * 16);
         unsafe {
-            (*(ptr as *const u64), *(ptr.add(8) as *const u32),
-             *(ptr.add(12) as *const u16), *(ptr.add(14) as *const u16))
+            (
+                *(ptr as *const u64),
+                *(ptr.add(8) as *const u32),
+                *(ptr.add(12) as *const u16),
+                *(ptr.add(14) as *const u16),
+            )
         }
     }
 
     /// Process one incoming TAP packet: read from TAP, write to RX virtqueue.
     /// Returns true if a packet was delivered.
     pub fn process_rx_from_tap(&mut self) -> bool {
-        let Some((desc_idx, used_idx)) = self.rx_pop_avail() else { return false };
+        let Some((desc_idx, used_idx)) = self.rx_pop_avail() else {
+            return false;
+        };
 
         // Read packet from TAP (non-blocking)
         let mut buf = [0u8; 65535];
-        let n = unsafe {
-            libc::read(self.tap_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-        };
-        if n <= 0 { return false; }
+        let n = unsafe { libc::read(self.tap_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n <= 0 {
+            return false;
+        }
         let frame = &buf[..n as usize];
 
         // Build virtio-net header (12 bytes of zeros for basic operation)
         let hdr = [0u8; VIRTIO_NET_HDR_SIZE];
-        let total = hdr.len() + frame.len();
+        let _total = hdr.len() + frame.len();
 
         // Walk descriptor chain, write header + frame into writable buffers
         let mut remaining_hdr = &hdr[..];
@@ -569,9 +569,7 @@ impl VirtioNet {
         loop {
             let (addr, len, flags, next) = self.rx_read_desc(idx);
             if flags & VRING_DESC_F_WRITE != 0 {
-                let buf = unsafe {
-                    std::slice::from_raw_parts_mut(self.gpa_to_ptr(addr), len as usize)
-                };
+                let buf = unsafe { std::slice::from_raw_parts_mut(self.gpa_to_ptr(addr), len as usize) };
                 let mut pos = 0;
                 // Write header first
                 if !remaining_hdr.is_empty() {
@@ -602,18 +600,9 @@ impl VirtioNet {
 
     /// Write a raw frame to the TAP fd (userspace fallback path).
     fn write_tap(&self, frame: &[u8]) -> anyhow::Result<usize> {
-        let n = unsafe {
-            libc::write(
-                self.tap_fd,
-                frame.as_ptr() as *const libc::c_void,
-                frame.len(),
-            )
-        };
+        let n = unsafe { libc::write(self.tap_fd, frame.as_ptr() as *const libc::c_void, frame.len()) };
         if n < 0 {
-            return Err(anyhow::anyhow!(
-                "TAP write failed: {}",
-                std::io::Error::last_os_error()
-            ));
+            return Err(anyhow::anyhow!("TAP write failed: {}", std::io::Error::last_os_error()));
         }
         Ok(n as usize)
     }
@@ -694,10 +683,7 @@ impl VirtioDevice for VirtioNet {
     }
 
     fn write_config(&mut self, offset: u64, data: &[u8]) {
-        tracing::debug!(
-            "virtio-net: write_config offset={offset} len={} (ignored)",
-            data.len()
-        );
+        tracing::debug!("virtio-net: write_config offset={offset} len={} (ignored)", data.len());
     }
 
     fn prepare_activate(&mut self, queues: &[QueueInfo], guest_mem: *mut u8, mem_size: u64) {
@@ -713,9 +699,13 @@ impl VirtioDevice for VirtioNet {
         // 2. Set avail_event in used ring to match avail_idx (always notify)
         if !self.is_vhost() && !guest_mem.is_null() {
             for qc in queues {
-                if qc.used_addr == 0 || qc.avail_addr == 0 { continue; }
+                if qc.used_addr == 0 || qc.avail_addr == 0 {
+                    continue;
+                }
                 // Clear used ring flags
-                unsafe { *(self.gpa_to_ptr(qc.used_addr) as *mut u16) = 0; }
+                unsafe {
+                    *(self.gpa_to_ptr(qc.used_addr) as *mut u16) = 0;
+                }
                 // Read current used_idx and avail_idx
                 let used_idx: u16 = unsafe { *(self.gpa_to_ptr(qc.used_addr + 2) as *const u16) };
                 let avail_idx: u16 = unsafe { *(self.gpa_to_ptr(qc.avail_addr + 2) as *const u16) };
@@ -723,11 +713,15 @@ impl VirtioDevice for VirtioNet {
                 // so guest thinks we've consumed everything and MUST notify on next
                 // avail ring layout: flags(2) + idx(2) + ring[size](2 each) + used_event(2)
                 let used_event_offset = qc.avail_addr + 4 + qc.size as u64 * 2;
-                unsafe { *(self.gpa_to_ptr(used_event_offset) as *mut u16) = used_idx; }
+                unsafe {
+                    *(self.gpa_to_ptr(used_event_offset) as *mut u16) = used_idx;
+                }
                 // Set avail_event (in used ring, after the ring entries) to avail_idx
                 // used ring layout: flags(2) + idx(2) + ring[size](8 each) + avail_event(2)
                 let avail_event_offset = qc.used_addr + 4 + qc.size as u64 * 8;
-                unsafe { *(self.gpa_to_ptr(avail_event_offset) as *mut u16) = avail_idx; }
+                unsafe {
+                    *(self.gpa_to_ptr(avail_event_offset) as *mut u16) = avail_idx;
+                }
             }
         }
     }
@@ -789,19 +783,16 @@ impl VirtioDevice for VirtioNet {
         }
     }
 
-    fn process_descriptor_chain(
-        &mut self,
-        queue_index: u16,
-        chain: &DescriptorChain,
-        vq: &Virtqueue,
-    ) -> u32 {
+    fn process_descriptor_chain(&mut self, queue_index: u16, chain: &DescriptorChain, vq: &Virtqueue) -> u32 {
         match queue_index {
             TX_QUEUE => self.process_tx_chain(chain, vq),
             _ => 0,
         }
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn reset(&mut self) {
         self.acked_features_low = 0;
         self.acked_features_high = 0;
@@ -820,7 +811,9 @@ impl VirtioDevice for VirtioNet {
     }
 
     fn restore_state(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        if data.is_empty() { return Ok(()); }
+        if data.is_empty() {
+            return Ok(());
+        }
         let state: serde_json::Value = serde_json::from_slice(data)?;
         if let Some(v) = state.get("link_up").and_then(|v| v.as_bool()) {
             self.link_up = v;

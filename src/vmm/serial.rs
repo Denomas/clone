@@ -331,11 +331,7 @@ impl Drop for RawModeGuard {
         #[cfg(unix)]
         {
             unsafe {
-                libc::tcsetattr(
-                    libc::STDIN_FILENO,
-                    libc::TCSANOW,
-                    &self.original_termios,
-                );
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original_termios);
             }
             tracing::debug!("Terminal restored from raw mode");
         }

@@ -6,11 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use kvm_bindings::{
-    kvm_pit_config, kvm_userspace_memory_region,
-    kvm_irq_routing, kvm_irq_routing_entry,
-    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQCHIP_IOAPIC,
-    KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
-    KVM_PIT_SPEAKER_DUMMY, KVM_MEM_LOG_DIRTY_PAGES,
+    kvm_irq_routing, kvm_irq_routing_entry, kvm_pit_config, kvm_userspace_memory_region, KVM_IRQCHIP_IOAPIC,
+    KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE, KVM_IRQ_ROUTING_IRQCHIP, KVM_MEM_LOG_DIRTY_PAGES,
+    KVM_PIT_SPEAKER_DUMMY,
 };
 use kvm_ioctls::{Kvm, VmFd};
 
@@ -135,8 +133,7 @@ impl Vm {
         };
 
         let guest_memory = if mem_size <= mmio_hole_start {
-            memory::create_guest_memory(alloc_size)
-                .context("Failed to create guest memory")?
+            memory::create_guest_memory(alloc_size).context("Failed to create guest memory")?
         } else {
             memory::create_guest_memory_with_hole(alloc_size, mmio_hole_start, mmio_hole_end)
                 .context("Failed to create guest memory")?
@@ -191,8 +188,10 @@ impl Vm {
 
             tracing::info!(
                 "Split memory: slot0=0..{:#x} ({}MB), slot1={:#x}..+{}MB, total={}MB",
-                mmio_hole_start, mmio_hole_start >> 20,
-                mmio_hole_end, above_hole >> 20,
+                mmio_hole_start,
+                mmio_hole_start >> 20,
+                mmio_hole_end,
+                above_hole >> 20,
                 mem_size >> 20,
             );
         }
@@ -235,10 +234,7 @@ impl Vm {
             self.kvm_slot_size = alloc_size;
             let (base, irq) = mmio_bus.register(Box::new(balloon));
             self.balloon_irq = Some(irq);
-            virtio_cmdline_params.push(format!(
-                "virtio_mmio.device=0x{:x}@0x{:x}:{}",
-                MMIO_STRIDE, base, irq
-            ));
+            virtio_cmdline_params.push(format!("virtio_mmio.device=0x{:x}@0x{:x}:{}", MMIO_STRIDE, base, irq));
 
             // Register virtio-vsock (userspace backend)
             match VirtioVsock::new(self.config.cid.unwrap_or(3)) {
@@ -250,10 +246,7 @@ impl Vm {
                     self.vsock_irq = Some(predicted_irq);
                     let (base, irq) = mmio_bus.register(Box::new(vsock));
                     debug_assert_eq!(irq, predicted_irq);
-                    virtio_cmdline_params.push(format!(
-                        "virtio_mmio.device=0x{:x}@0x{:x}:{}",
-                        MMIO_STRIDE, base, irq
-                    ));
+                    virtio_cmdline_params.push(format!("virtio_mmio.device=0x{:x}@0x{:x}:{}", MMIO_STRIDE, base, irq));
                 }
                 Err(e) => {
                     tracing::warn!("Failed to create virtio-vsock: {e}");
@@ -265,10 +258,8 @@ impl Vm {
                 match crate::virtio::block::VirtioBlock::open(block_path, false) {
                     Ok(block) => {
                         let (base, irq) = mmio_bus.register(Box::new(block));
-                        virtio_cmdline_params.push(format!(
-                            "virtio_mmio.device=0x{:x}@0x{:x}:{}",
-                            MMIO_STRIDE, base, irq
-                        ));
+                        virtio_cmdline_params
+                            .push(format!("virtio_mmio.device=0x{:x}@0x{:x}:{}", MMIO_STRIDE, base, irq));
                     }
                     Err(e) => {
                         tracing::warn!("Failed to open block device {block_path}: {e}");
@@ -281,10 +272,8 @@ impl Vm {
                 match crate::virtio::block::VirtioBlock::open(overlay_path, false) {
                     Ok(block) => {
                         let (base, irq) = mmio_bus.register(Box::new(block));
-                        virtio_cmdline_params.push(format!(
-                            "virtio_mmio.device=0x{:x}@0x{:x}:{}",
-                            MMIO_STRIDE, base, irq
-                        ));
+                        virtio_cmdline_params
+                            .push(format!("virtio_mmio.device=0x{:x}@0x{:x}:{}", MMIO_STRIDE, base, irq));
                         tracing::info!("Overlay block device registered: {overlay_path}");
                     }
                     Err(e) => {
@@ -308,10 +297,7 @@ impl Vm {
                 if root_dir.is_dir() {
                     let fs_dev = crate::virtio::fs::VirtioFs::new(root_dir, tag.clone());
                     let (base, irq) = mmio_bus.register(Box::new(fs_dev));
-                    virtio_cmdline_params.push(format!(
-                        "virtio_mmio.device=0x{:x}@0x{:x}:{}",
-                        MMIO_STRIDE, base, irq
-                    ));
+                    virtio_cmdline_params.push(format!("virtio_mmio.device=0x{:x}@0x{:x}:{}", MMIO_STRIDE, base, irq));
                     tracing::info!("virtio-fs registered: dir={dir_path}, tag={tag}");
                 } else {
                     tracing::warn!("Shared directory does not exist: {dir_path}");
@@ -355,7 +341,12 @@ impl Vm {
         // Set guest memory on the MMIO bus for virtqueue descriptor chain processing
         {
             let mut mmio_bus = self.mmio_bus.lock().unwrap();
-            mmio_bus.set_guest_memory_with_hole(guest_memory.as_ptr(), guest_memory.size(), guest_memory.hole_start(), guest_memory.hole_end());
+            mmio_bus.set_guest_memory_with_hole(
+                guest_memory.as_ptr(),
+                guest_memory.size(),
+                guest_memory.hole_start(),
+                guest_memory.hole_end(),
+            );
         }
 
         // Build the final kernel command line with virtio_mmio.device parameters
@@ -393,7 +384,7 @@ impl Vm {
             let mut pci_bus = crate::pci::PciBus::new();
             for bdf_str in &self.config.passthrough_devices {
                 match crate::pci::vfio::VfioDevice::open(bdf_str) {
-                    Ok(mut vfio_dev) => {
+                    Ok(vfio_dev) => {
                         // Map guest memory for DMA
                         if let Err(e) = vfio_dev.map_dma(guest_memory.as_ptr(), alloc_size) {
                             tracing::error!("Failed to map DMA for {bdf_str}: {e}");
@@ -470,15 +461,21 @@ impl Vm {
     /// Instead of loading a kernel, this maps the template's memory file
     /// with MAP_PRIVATE (CoW) and restores vCPU register state. This is the
     /// primary mechanism for <20ms cold starts.
-    pub fn fork_boot(&mut self, template_dir: &str, skip_verify: bool, mem_limit_mb: Option<u32>, vcpu_limit: Option<u32>, overlay_size: Option<&str>) -> Result<()> {
-        use crate::boot::template::{TemplateSnapshot, fork_from_template};
+    pub fn fork_boot(
+        &mut self,
+        template_dir: &str,
+        skip_verify: bool,
+        mem_limit_mb: Option<u32>,
+        vcpu_limit: Option<u32>,
+        _overlay_size: Option<&str>,
+    ) -> Result<()> {
         use crate::boot::identity;
+        use crate::boot::template::{fork_from_template, TemplateSnapshot};
 
         let template = TemplateSnapshot::load(template_dir, !skip_verify)?;
 
         // 1. Fork guest memory from template (CoW mmap)
-        let guest_memory = fork_from_template(&template)
-            .context("Failed to fork memory from template")?;
+        let guest_memory = fork_from_template(&template).context("Failed to fork memory from template")?;
 
         let mem_size = template.memory_size;
 
@@ -486,7 +483,7 @@ impl Vm {
         // KVM_MEM_LOG_DIRTY_PAGES enables dirty page tracking for incremental snapshots.
         let mmio_hole_start: u64 = 0xC000_0000;
         let mmio_hole_end: u64 = 0x1_0000_0000;
-        let guard_size: u64 = 128 << 20;
+        let _guard_size: u64 = 128 << 20;
 
         if mem_size <= mmio_hole_start {
             // Small VM: single KVM slot
@@ -537,8 +534,10 @@ impl Vm {
 
             tracing::info!(
                 "Split memory: slot0=0..{:#x} ({}MB), slot1={:#x}..+{}MB, total={}MB",
-                mmio_hole_start, mmio_hole_start >> 20,
-                mmio_hole_end, above_hole >> 20,
+                mmio_hole_start,
+                mmio_hole_start >> 20,
+                mmio_hole_end,
+                above_hole >> 20,
                 mem_size >> 20,
             );
             self.kvm_slot_size = mmio_hole_start; // for dirty log
@@ -567,8 +566,7 @@ impl Vm {
                 let pit_state = unsafe {
                     std::ptr::read(template.device_states.pit.as_ptr() as *const kvm_bindings::kvm_pit_state2)
                 };
-                self.vm_fd.set_pit2(&pit_state)
-                    .context("Failed to restore PIT state")?;
+                self.vm_fd.set_pit2(&pit_state).context("Failed to restore PIT state")?;
                 tracing::info!("Restored PIT state from template");
             }
         }
@@ -586,10 +584,10 @@ impl Vm {
             let expected_size = std::mem::size_of::<kvm_irqchip>();
             for (i, name) in ["PIC_MASTER", "PIC_SLAVE", "IOAPIC"].iter().enumerate() {
                 if template.device_states.irqchip[i].len() == expected_size {
-                    let chip = unsafe {
-                        std::ptr::read(template.device_states.irqchip[i].as_ptr() as *const kvm_irqchip)
-                    };
-                    self.vm_fd.set_irqchip(&chip)
+                    let chip =
+                        unsafe { std::ptr::read(template.device_states.irqchip[i].as_ptr() as *const kvm_irqchip) };
+                    self.vm_fd
+                        .set_irqchip(&chip)
                         .context(format!("Failed to restore {name}"))?;
                 }
             }
@@ -631,13 +629,18 @@ impl Vm {
                     self.vsock_irq = Some(predicted_irq);
                     mmio_bus.register(Box::new(vsock));
                 }
-                Err(e) => { tracing::warn!("Failed to create virtio-vsock: {e}"); }
+                Err(e) => {
+                    tracing::warn!("Failed to create virtio-vsock: {e}");
+                }
             }
 
             // Register virtio-block: use CLI --block, or fall back to template metadata.
             // The block device MUST be registered if the template had one, otherwise
             // device indices are misaligned and transport state restore breaks.
-            let block_path = self.config.block_device.clone()
+            let block_path = self
+                .config
+                .block_device
+                .clone()
                 .or_else(|| template.block_device.clone());
             if let Some(ref block_path) = block_path {
                 match crate::virtio::block::VirtioBlock::open(block_path, false) {
@@ -692,16 +695,26 @@ impl Vm {
                         let kick_evt = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
                         if kick_evt >= 0 {
                             let mut ioeventfd = kvm_bindings::kvm_ioeventfd {
-                                datamatch: 1, len: 4, addr: notify_addr, fd: kick_evt,
-                                flags: 1, ..Default::default()
+                                datamatch: 1,
+                                len: 4,
+                                addr: notify_addr,
+                                fd: kick_evt,
+                                flags: 1,
+                                ..Default::default()
                             };
                             let ret = unsafe {
-                                libc::ioctl(self.vm_fd.as_raw_fd(), 0x4040AE79u64 as libc::c_ulong, &ioeventfd)
+                                libc::ioctl(self.vm_fd.as_raw_fd(), crate::compat::ioctl_req(0x4040AE79), &ioeventfd)
                             };
                             if ret != 0 {
                                 ioeventfd.flags = 0;
                                 ioeventfd.datamatch = 0;
-                                unsafe { libc::ioctl(self.vm_fd.as_raw_fd(), 0x4040AE79u64 as libc::c_ulong, &ioeventfd); }
+                                unsafe {
+                                    libc::ioctl(
+                                        self.vm_fd.as_raw_fd(),
+                                        crate::compat::ioctl_req(0x4040AE79),
+                                        &ioeventfd,
+                                    );
+                                }
                             }
                         }
                         self.net_tap_info = Some((tap_fd, dev_index, actual_irq, kick_evt));
@@ -715,7 +728,12 @@ impl Vm {
 
             // (virtio-fs registered above, before net)
 
-            mmio_bus.set_guest_memory_with_hole(guest_memory.as_ptr(), guest_memory.size(), guest_memory.hole_start(), guest_memory.hole_end());
+            mmio_bus.set_guest_memory_with_hole(
+                guest_memory.as_ptr(),
+                guest_memory.size(),
+                guest_memory.hole_start(),
+                guest_memory.hole_end(),
+            );
 
             // Restore transport state from the template snapshot so devices are
             // in the same state the guest kernel expects (queue addresses, activated).
@@ -729,9 +747,7 @@ impl Vm {
             // Send transport reset to close stale connections from the snapshot.
             if let Some(dev_idx) = self.vsock_dev_index {
                 if let Some(transport) = mmio_bus.transport_mut(dev_idx) {
-                    if let Some(vsock) = transport.device_mut().as_any_mut()
-                        .downcast_mut::<VirtioVsock>()
-                    {
+                    if let Some(vsock) = transport.device_mut().as_any_mut().downcast_mut::<VirtioVsock>() {
                         vsock.send_transport_reset();
                     }
                 }
@@ -751,13 +767,11 @@ impl Vm {
             if limit_mb < template_mb {
                 let reclaim_mb = template_mb - limit_mb;
                 let reclaim_pages = reclaim_mb * 256; // 1 MB = 256 x 4KB pages
-                // Use update_target() via the MMIO bus so config_interrupt_pending
-                // is set and the guest driver gets notified.
+                                                      // Use update_target() via the MMIO bus so config_interrupt_pending
+                                                      // is set and the guest driver gets notified.
                 let mut bus = self.mmio_bus.lock().unwrap();
                 if let Some(transport) = bus.transport_mut(0) {
-                    if let Some(balloon) = transport.device_mut().as_any_mut()
-                        .downcast_mut::<VirtioBalloon>()
-                    {
+                    if let Some(balloon) = transport.device_mut().as_any_mut().downcast_mut::<VirtioBalloon>() {
                         balloon.update_target(reclaim_pages);
                         tracing::info!(
                             template_mb,
@@ -801,18 +815,16 @@ impl Vm {
         if let (Some(dev_index), Some(irq)) = (self.vsock_dev_index, self.vsock_irq) {
             let bus = self.mmio_bus.lock().unwrap();
             if let Some(transport) = bus.transport(dev_index) {
-                transport.vhost_interrupt().fetch_or(1, std::sync::atomic::Ordering::Release);
+                transport
+                    .vhost_interrupt()
+                    .fetch_or(1, std::sync::atomic::Ordering::Release);
             }
             drop(bus);
             let _ = self.vm_fd.set_irq_line(irq, true);
             let _ = self.vm_fd.set_irq_line(irq, false);
         }
 
-        tracing::info!(
-            "Forked VM from template: {}MB, {} vCPUs",
-            mem_size >> 20,
-            num_vcpus,
-        );
+        tracing::info!("Forked VM from template: {}MB, {} vCPUs", mem_size >> 20, num_vcpus,);
 
         Ok(())
     }
@@ -886,11 +898,7 @@ impl Vm {
                             // Read to clear the eventfd
                             let mut val: u64 = 0;
                             unsafe {
-                                libc::read(
-                                    pfd.fd,
-                                    &mut val as *mut u64 as *mut libc::c_void,
-                                    8,
-                                );
+                                libc::read(pfd.fd, &mut val as *mut u64 as *mut libc::c_void, 8);
                             }
                             need_irq = true;
                             pfd.revents = 0;
@@ -945,10 +953,16 @@ impl Vm {
                     std::thread::Builder::new()
                         .name("vsock-rx-poll".into())
                         .spawn(move || {
-                            let mut pfd = libc::pollfd { fd: device_fd, events: libc::POLLIN, revents: 0 };
+                            let mut pfd = libc::pollfd {
+                                fd: device_fd,
+                                events: libc::POLLIN,
+                                revents: 0,
+                            };
                             loop {
                                 let ret = unsafe { libc::poll(&mut pfd, 1, 500) };
-                                if ret <= 0 { continue; }
+                                if ret <= 0 {
+                                    continue;
+                                }
                                 if pfd.revents & libc::POLLIN != 0 {
                                     pfd.revents = 0;
                                     // Trigger RX processing on the vsock device
@@ -956,7 +970,7 @@ impl Vm {
                                     if let Some(transport) = bus.transport_mut(dev_index) {
                                         let vhost_int = transport.vhost_interrupt();
                                         let _ = transport.device_mut().process_queue(0); // RX_QUEUE
-                                        // Signal guest interrupt
+                                                                                         // Signal guest interrupt
                                         vhost_int.fetch_or(1, std::sync::atomic::Ordering::Release);
                                         drop(bus);
                                         let _ = vm_fd_clone.set_irq_line(irq, true);
@@ -979,23 +993,37 @@ impl Vm {
                 .name("net-io-poll".into())
                 .spawn(move || {
                     let mut pollfds = [
-                        libc::pollfd { fd: tap_fd, events: libc::POLLIN, revents: 0 },
-                        libc::pollfd { fd: kick_evt, events: libc::POLLIN, revents: 0 },
+                        libc::pollfd {
+                            fd: tap_fd,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: kick_evt,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
                     ];
                     let nfds = if kick_evt >= 0 { 2 } else { 1 };
                     loop {
                         let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), nfds, 500) };
-                        if ret <= 0 { continue; }
+                        if ret <= 0 {
+                            continue;
+                        }
 
                         let tap_readable = pollfds[0].revents & libc::POLLIN != 0;
                         let tx_kicked = nfds > 1 && pollfds[1].revents & libc::POLLIN != 0;
                         pollfds[0].revents = 0;
-                        if nfds > 1 { pollfds[1].revents = 0; }
+                        if nfds > 1 {
+                            pollfds[1].revents = 0;
+                        }
 
                         // Drain kick eventfd
                         if tx_kicked {
                             let mut val: u64 = 0;
-                            unsafe { libc::read(kick_evt, &mut val as *mut u64 as *mut libc::c_void, 8); }
+                            unsafe {
+                                libc::read(kick_evt, &mut val as *mut u64 as *mut libc::c_void, 8);
+                            }
                         }
 
                         let mut need_irq = false;
@@ -1005,13 +1033,15 @@ impl Vm {
                                 // Process TX if guest kicked
                                 if tx_kicked {
                                     let _ = transport.device_mut().process_queue(1); // TX_QUEUE
-                                    // Also process descriptor chains for TX
+                                                                                     // Also process descriptor chains for TX
                                     transport.process_queue_descriptors_pub(1);
                                 }
 
                                 // Process RX from TAP
                                 if tap_readable {
-                                    if let Some(net) = transport.device_mut().as_any_mut()
+                                    if let Some(net) = transport
+                                        .device_mut()
+                                        .as_any_mut()
                                         .downcast_mut::<crate::virtio::net::VirtioNet>()
                                     {
                                         while net.process_rx_from_tap() {
@@ -1021,7 +1051,8 @@ impl Vm {
                                 }
 
                                 if need_irq || tx_kicked {
-                                    transport.vhost_interrupt()
+                                    transport
+                                        .vhost_interrupt()
                                         .fetch_or(1, std::sync::atomic::Ordering::Release);
                                     need_irq = true;
                                 }
@@ -1052,9 +1083,7 @@ impl Vm {
             let shutdown_clone = Arc::clone(&shutdown_flag);
             let total_pages = self.mem_size / 4096;
             let mem_size = self.mem_size;
-            let guest_mem_ptr = self.guest_memory.as_ref()
-                .map(|m| m.as_ptr() as usize)
-                .unwrap_or(0);
+            let guest_mem_ptr = self.guest_memory.as_ref().map(|m| m.as_ptr() as usize).unwrap_or(0);
             // Floor: retain at least 50% of guest RAM or 512MB, whichever is larger.
             // Prevents balloon from starving small VMs (e.g. 2GB with Claude Code).
             let mem_mb = (self.mem_size / (1024 * 1024)) as u32;
@@ -1114,7 +1143,7 @@ impl Vm {
                         // Periodically refresh overcommit tracking (every 10 ticks = 10s)
                         static TICK_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                         let tick = TICK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if tick % 10 == 0 && guest_mem_ptr != 0 {
+                        if tick.is_multiple_of(10) && guest_mem_ptr != 0 {
                             overcommit.refresh(guest_mem_ptr as *const u8, mem_size);
                             tracing::debug!(
                                 private_pages = overcommit.private_pages(),
@@ -1139,12 +1168,12 @@ impl Vm {
         // Spawn AP threads (vCPU 1, 2, ...) and capture their pthread_t handles
         for vcpu in all_vcpus.drain(1..) {
             // Use a channel to get the pthread_t from inside the spawned thread
-            let (tx, rx) = std::sync::mpsc::channel::<libc::pthread_t>();
+            let (tx, rx) = std::sync::mpsc::channel::<crate::compat::SendPthreadT>();
             let handle = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id()))
                 .spawn(move || {
                     // Send our pthread_t to the main thread
-                    let _ = tx.send(unsafe { libc::pthread_self() });
+                    let _ = tx.send(crate::compat::SendPthreadT(unsafe { libc::pthread_self() }));
                     let mut vcpu = vcpu;
                     if let Err(e) = vcpu.run_loop() {
                         tracing::error!("vCPU {} exited with error: {e}", vcpu.id());
@@ -1153,7 +1182,7 @@ impl Vm {
                 .context("Failed to spawn AP vCPU thread")?;
             // Receive the pthread_t handle
             if let Ok(tid) = rx.recv() {
-                vcpu_threads.push(tid);
+                vcpu_threads.push(tid.0);
             }
             ap_handles.push(handle);
         }
@@ -1164,7 +1193,9 @@ impl Vm {
         vcpu_threads.insert(0, bsp_tid);
 
         // Start the per-VM control socket now that we have all pthread_t handles
-        let guest_mem_ptr = self.guest_memory.as_ref()
+        let guest_mem_ptr = self
+            .guest_memory
+            .as_ref()
             .map(|m| m.as_ptr())
             .unwrap_or(std::ptr::null_mut());
         let vm_handle = Arc::new(crate::control::sync_server::VmHandle {
@@ -1240,18 +1271,14 @@ impl Vm {
                                                 break;
                                             }
                                             let n = unsafe {
-                                                libc::read(
-                                                    client_fd,
-                                                    buf.as_mut_ptr() as *mut libc::c_void,
-                                                    buf.len(),
-                                                )
+                                                libc::read(client_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
                                             };
                                             if n <= 0 {
                                                 break; // client disconnected
                                             }
-                                            for i in 0..n as usize {
+                                            for &byte in &buf[..n as usize] {
                                                 let mut serial = serial_for_console.lock().unwrap();
-                                                serial.enqueue_input(buf[i]);
+                                                serial.enqueue_input(byte);
                                                 if serial.interrupt_enabled() {
                                                     drop(serial);
                                                     let _ = vm_fd_for_console.set_irq_line(4, true);
@@ -1316,38 +1343,38 @@ pub fn setup_gsi_routing(vm_fd: &VmFd) -> Result<()> {
 
     // IOAPIC entries for all 24 pins
     for i in 0u32..24 {
-        let mut entry = kvm_irq_routing_entry::default();
-        entry.gsi = i;
-        entry.type_ = KVM_IRQ_ROUTING_IRQCHIP;
-        // SAFETY: union access — we know the type_ is IRQCHIP
-        unsafe {
-            entry.u.irqchip.irqchip = KVM_IRQCHIP_IOAPIC;
-            entry.u.irqchip.pin = i;
-        }
+        let mut entry = kvm_irq_routing_entry {
+            gsi: i,
+            type_: KVM_IRQ_ROUTING_IRQCHIP,
+            ..Default::default()
+        };
+
+        entry.u.irqchip.irqchip = KVM_IRQCHIP_IOAPIC;
+        entry.u.irqchip.pin = i;
         entries.push(entry);
     }
 
     // PIC master entries for IRQ 0-7
     for i in 0u32..8 {
-        let mut entry = kvm_irq_routing_entry::default();
-        entry.gsi = i;
-        entry.type_ = KVM_IRQ_ROUTING_IRQCHIP;
-        unsafe {
-            entry.u.irqchip.irqchip = KVM_IRQCHIP_PIC_MASTER;
-            entry.u.irqchip.pin = i;
-        }
+        let mut entry = kvm_irq_routing_entry {
+            gsi: i,
+            type_: KVM_IRQ_ROUTING_IRQCHIP,
+            ..Default::default()
+        };
+        entry.u.irqchip.irqchip = KVM_IRQCHIP_PIC_MASTER;
+        entry.u.irqchip.pin = i;
         entries.push(entry);
     }
 
     // PIC slave entries for IRQ 8-15
     for i in 0u32..8 {
-        let mut entry = kvm_irq_routing_entry::default();
-        entry.gsi = i + 8;
-        entry.type_ = KVM_IRQ_ROUTING_IRQCHIP;
-        unsafe {
-            entry.u.irqchip.irqchip = KVM_IRQCHIP_PIC_SLAVE;
-            entry.u.irqchip.pin = i;
-        }
+        let mut entry = kvm_irq_routing_entry {
+            gsi: i + 8,
+            type_: KVM_IRQ_ROUTING_IRQCHIP,
+            ..Default::default()
+        };
+        entry.u.irqchip.irqchip = KVM_IRQCHIP_PIC_SLAVE;
+        entry.u.irqchip.pin = i;
         entries.push(entry);
     }
 
@@ -1356,8 +1383,7 @@ pub fn setup_gsi_routing(vm_fd: &VmFd) -> Result<()> {
     let header_size = std::mem::size_of::<kvm_irq_routing>();
     let total_size = header_size + entries.len() * entry_size;
 
-    let layout = std::alloc::Layout::from_size_align(total_size, 8)
-        .context("Invalid layout for kvm_irq_routing")?;
+    let layout = std::alloc::Layout::from_size_align(total_size, 8).context("Invalid layout for kvm_irq_routing")?;
 
     // SAFETY: We allocate, zero, fill, pass to ioctl, then dealloc.
     unsafe {
@@ -1376,9 +1402,7 @@ pub fn setup_gsi_routing(vm_fd: &VmFd) -> Result<()> {
             std::ptr::write(entries_ptr.add(i), *entry);
         }
 
-        let result = vm_fd
-            .set_gsi_routing(routing)
-            .context("Failed to set GSI routing");
+        let result = vm_fd.set_gsi_routing(routing).context("Failed to set GSI routing");
 
         std::alloc::dealloc(ptr, layout);
 

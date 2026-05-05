@@ -118,8 +118,7 @@ fn collect_host_metrics_linux() -> HostMetrics {
 #[cfg(target_os = "linux")]
 fn parse_meminfo_kb(s: &str) -> u64 {
     // Format: "      12345 kB"
-    s.trim()
-        .split_whitespace()
+    s.split_whitespace()
         .next()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0)
@@ -127,9 +126,7 @@ fn parse_meminfo_kb(s: &str) -> u64 {
 
 #[cfg(target_os = "linux")]
 fn read_sysfs_u64(path: &str) -> Option<u64> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
+    std::fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -267,10 +264,7 @@ impl MetricsCollector {
 
     /// Update or insert metrics for a VM.
     pub fn update(&self, vm_id: &str, metrics: VmMetrics) {
-        self.vm_metrics
-            .lock()
-            .unwrap()
-            .insert(vm_id.to_string(), metrics);
+        self.vm_metrics.lock().unwrap().insert(vm_id.to_string(), metrics);
     }
 
     /// Remove metrics for a destroyed VM.
@@ -304,10 +298,7 @@ pub struct MetricsCollectorHandle {
 
 impl MetricsCollectorHandle {
     pub fn update(&self, vm_id: &str, metrics: VmMetrics) {
-        self.vm_metrics
-            .lock()
-            .unwrap()
-            .insert(vm_id.to_string(), metrics);
+        self.vm_metrics.lock().unwrap().insert(vm_id.to_string(), metrics);
     }
 
     pub fn remove(&self, vm_id: &str) {
@@ -403,8 +394,20 @@ mod tests {
     #[test]
     fn test_metrics_collector_all() {
         let collector = MetricsCollector::new();
-        collector.update("vm-1", VmMetrics { private_rss_bytes: 1, ..Default::default() });
-        collector.update("vm-2", VmMetrics { private_rss_bytes: 2, ..Default::default() });
+        collector.update(
+            "vm-1",
+            VmMetrics {
+                private_rss_bytes: 1,
+                ..Default::default()
+            },
+        );
+        collector.update(
+            "vm-2",
+            VmMetrics {
+                private_rss_bytes: 2,
+                ..Default::default()
+            },
+        );
 
         let all = collector.all();
         assert_eq!(all.len(), 2);
@@ -415,8 +418,20 @@ mod tests {
     #[test]
     fn test_metrics_collector_update_overwrites() {
         let collector = MetricsCollector::new();
-        collector.update("vm-1", VmMetrics { private_rss_bytes: 100, ..Default::default() });
-        collector.update("vm-1", VmMetrics { private_rss_bytes: 200, ..Default::default() });
+        collector.update(
+            "vm-1",
+            VmMetrics {
+                private_rss_bytes: 100,
+                ..Default::default()
+            },
+        );
+        collector.update(
+            "vm-1",
+            VmMetrics {
+                private_rss_bytes: 200,
+                ..Default::default()
+            },
+        );
 
         assert_eq!(collector.get("vm-1").unwrap().private_rss_bytes, 200);
     }
@@ -426,7 +441,13 @@ mod tests {
         let collector = MetricsCollector::new();
         let handle = collector.handle();
 
-        handle.update("vm-1", VmMetrics { vcpu_time_ns: 999, ..Default::default() });
+        handle.update(
+            "vm-1",
+            VmMetrics {
+                vcpu_time_ns: 999,
+                ..Default::default()
+            },
+        );
         assert_eq!(collector.get("vm-1").unwrap().vcpu_time_ns, 999);
 
         // Handle can also read
@@ -457,11 +478,19 @@ mod tests {
     fn test_event_logger_ring_buffer_overflow() {
         let logger = EventLogger::new(3);
 
-        logger.log(VmEvent::Boot { vm_id: "vm-1".to_string() });
-        logger.log(VmEvent::Boot { vm_id: "vm-2".to_string() });
-        logger.log(VmEvent::Boot { vm_id: "vm-3".to_string() });
+        logger.log(VmEvent::Boot {
+            vm_id: "vm-1".to_string(),
+        });
+        logger.log(VmEvent::Boot {
+            vm_id: "vm-2".to_string(),
+        });
+        logger.log(VmEvent::Boot {
+            vm_id: "vm-3".to_string(),
+        });
         // Buffer is full now (capacity=3)
-        logger.log(VmEvent::Boot { vm_id: "vm-4".to_string() });
+        logger.log(VmEvent::Boot {
+            vm_id: "vm-4".to_string(),
+        });
 
         let events = logger.snapshot();
         assert_eq!(events.len(), 3);
@@ -480,8 +509,12 @@ mod tests {
     #[test]
     fn test_event_logger_drain() {
         let logger = EventLogger::new(100);
-        logger.log(VmEvent::Boot { vm_id: "vm-1".to_string() });
-        logger.log(VmEvent::Shutdown { vm_id: "vm-1".to_string() });
+        logger.log(VmEvent::Boot {
+            vm_id: "vm-1".to_string(),
+        });
+        logger.log(VmEvent::Shutdown {
+            vm_id: "vm-1".to_string(),
+        });
 
         let events = logger.drain();
         assert_eq!(events.len(), 2);
@@ -494,8 +527,12 @@ mod tests {
     #[test]
     fn test_event_logger_timestamp_monotonic() {
         let logger = EventLogger::new(100);
-        logger.log(VmEvent::Boot { vm_id: "vm-1".to_string() });
-        logger.log(VmEvent::Shutdown { vm_id: "vm-1".to_string() });
+        logger.log(VmEvent::Boot {
+            vm_id: "vm-1".to_string(),
+        });
+        logger.log(VmEvent::Shutdown {
+            vm_id: "vm-1".to_string(),
+        });
 
         let events = logger.snapshot();
         assert!(events[1].timestamp_ms >= events[0].timestamp_ms);
@@ -527,13 +564,31 @@ mod tests {
         let logger = EventLogger::new(100);
         logger.log(VmEvent::Boot { vm_id: "v".to_string() });
         logger.log(VmEvent::Shutdown { vm_id: "v".to_string() });
-        logger.log(VmEvent::BalloonInflate { vm_id: "v".to_string(), pages: 10 });
-        logger.log(VmEvent::BalloonDeflate { vm_id: "v".to_string(), pages: 5 });
+        logger.log(VmEvent::BalloonInflate {
+            vm_id: "v".to_string(),
+            pages: 10,
+        });
+        logger.log(VmEvent::BalloonDeflate {
+            vm_id: "v".to_string(),
+            pages: 5,
+        });
         logger.log(VmEvent::OomKill { vm_id: "v".to_string() });
-        logger.log(VmEvent::VcpuPark { vm_id: "v".to_string(), vcpu_id: 0 });
-        logger.log(VmEvent::VcpuWake { vm_id: "v".to_string(), vcpu_id: 0 });
-        logger.log(VmEvent::TemplateHit { vm_id: "v".to_string(), template: "t".to_string() });
-        logger.log(VmEvent::TemplateMiss { vm_id: "v".to_string(), template: "t".to_string() });
+        logger.log(VmEvent::VcpuPark {
+            vm_id: "v".to_string(),
+            vcpu_id: 0,
+        });
+        logger.log(VmEvent::VcpuWake {
+            vm_id: "v".to_string(),
+            vcpu_id: 0,
+        });
+        logger.log(VmEvent::TemplateHit {
+            vm_id: "v".to_string(),
+            template: "t".to_string(),
+        });
+        logger.log(VmEvent::TemplateMiss {
+            vm_id: "v".to_string(),
+            template: "t".to_string(),
+        });
 
         assert_eq!(logger.snapshot().len(), 9);
     }
@@ -591,7 +646,9 @@ mod tests {
     fn test_timestamped_event_serialization() {
         let ts = TimestampedEvent {
             timestamp_ms: 12345,
-            event: VmEvent::Boot { vm_id: "vm-1".to_string() },
+            event: VmEvent::Boot {
+                vm_id: "vm-1".to_string(),
+            },
         };
         let json = serde_json::to_string(&ts).unwrap();
         assert!(json.contains("12345"));

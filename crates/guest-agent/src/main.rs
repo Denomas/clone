@@ -43,10 +43,7 @@ enum AgentMessage {
 enum VmmMessage {
     Poll,
     Shutdown,
-    Exec {
-        command: String,
-        args: Vec<String>,
-    },
+    Exec { command: String, args: Vec<String> },
 }
 
 /// Runs on every reconnect (fork or not). Fixes state that drifts
@@ -69,7 +66,8 @@ fn on_reconnect() {
 fn cleanup_after_fork() {
     // Restart D-Bus to clear stale sockets
     let _ = std::process::Command::new("systemctl")
-        .args(["restart", "dbus"]).output();
+        .args(["restart", "dbus"])
+        .output();
     // Remove stale user session sockets
     let _ = std::fs::remove_file("/run/nologin");
     if let Ok(entries) = std::fs::read_dir("/run/user") {
@@ -81,13 +79,18 @@ fn cleanup_after_fork() {
     // Restart services that use Go runtime (crashes after fork due to
     // stale goroutine stacks). Latch is the main one.
     let _ = std::process::Command::new("systemctl")
-        .args(["restart", "latch"]).output();
+        .args(["restart", "latch"])
+        .output();
     // Restart user latch service if lingering is enabled
     if let Ok(entries) = std::fs::read_dir("/home") {
         for entry in entries.flatten() {
             let user = entry.file_name();
             let _ = std::process::Command::new("su")
-                .args(["-c", "systemctl --user restart latch 2>/dev/null", user.to_str().unwrap_or("shell")])
+                .args([
+                    "-c",
+                    "systemctl --user restart latch 2>/dev/null",
+                    user.to_str().unwrap_or("shell"),
+                ])
                 .output();
         }
     }
@@ -110,11 +113,15 @@ fn read_identity_ip() -> Option<String> {
     let iomem = std::fs::read_to_string("/proc/iomem").ok()?;
     let mut ram_end: u64 = 0;
     for line in iomem.lines() {
-        if !line.contains("System RAM") { continue; }
+        if !line.contains("System RAM") {
+            continue;
+        }
         let range = line.split(':').next()?.trim();
         let end_str = range.split('-').nth(1)?.trim();
         if let Ok(end) = u64::from_str_radix(end_str, 16) {
-            if end > ram_end { ram_end = end; }
+            if end > ram_end {
+                ram_end = end;
+            }
         }
     }
 
@@ -138,9 +145,8 @@ fn read_identity_ip() -> Option<String> {
     }
 
     // Last resort: /run/clone-identity
-    read_identity_from_file("/run/clone-identity").and_then(|_|
-        parse_identity_ip(&std::fs::read("/run/clone-identity").ok()?))
-
+    read_identity_from_file("/run/clone-identity")
+        .and_then(|_| parse_identity_ip(&std::fs::read("/run/clone-identity").ok()?))
 }
 
 fn read_identity_from_file(path: &str) -> Option<String> {
@@ -157,30 +163,43 @@ fn read_identity_from_devmem(addr: u64) -> Option<String> {
     let map_size = offset_in_page + 0x100;
     let ptr = unsafe {
         libc::mmap(
-            std::ptr::null_mut(), map_size,
-            libc::PROT_READ, libc::MAP_SHARED,
-            f.as_raw_fd(), aligned as libc::off_t,
+            std::ptr::null_mut(),
+            map_size,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            f.as_raw_fd(),
+            aligned as libc::off_t,
         )
     };
-    if ptr == libc::MAP_FAILED { return None; }
+    if ptr == libc::MAP_FAILED {
+        return None;
+    }
     let data = unsafe { std::slice::from_raw_parts(ptr.add(offset_in_page) as *const u8, 0x6C) };
     let result = parse_identity_ip(data);
-    unsafe { libc::munmap(ptr, map_size); }
+    unsafe {
+        libc::munmap(ptr, map_size);
+    }
     result
 }
 
 fn read_identity_mac() -> Option<String> {
     // Try /run/clone-identity first, then /dev/mem
-    if let Some(mac) = read_identity_from_file("/run/clone-identity").and_then(|_| parse_identity_mac(&std::fs::read("/run/clone-identity").ok()?)) {
+    if let Some(mac) = read_identity_from_file("/run/clone-identity")
+        .and_then(|_| parse_identity_mac(&std::fs::read("/run/clone-identity").ok()?))
+    {
         return Some(mac);
     }
     let iomem = std::fs::read_to_string("/proc/iomem").ok()?;
     for line in iomem.lines() {
-        if !line.contains("reserved") && !line.contains("Reserved") { continue; }
+        if !line.contains("reserved") && !line.contains("Reserved") {
+            continue;
+        }
         let range = line.split(':').next()?.trim();
         let start_str = range.split('-').next()?.trim();
         let start = u64::from_str_radix(start_str, 16).ok()?;
-        if start < 0x100000 { continue; }
+        if start < 0x100000 {
+            continue;
+        }
         if let Some(mac) = read_mac_from_devmem(start) {
             return Some(mac);
         }
@@ -197,35 +216,56 @@ fn read_mac_from_devmem(addr: u64) -> Option<String> {
     let map_size = offset_in_page + 0x100;
     let ptr = unsafe {
         libc::mmap(
-            std::ptr::null_mut(), map_size,
-            libc::PROT_READ, libc::MAP_SHARED,
-            f.as_raw_fd(), aligned as libc::off_t,
+            std::ptr::null_mut(),
+            map_size,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            f.as_raw_fd(),
+            aligned as libc::off_t,
         )
     };
-    if ptr == libc::MAP_FAILED { return None; }
+    if ptr == libc::MAP_FAILED {
+        return None;
+    }
     let data = unsafe { std::slice::from_raw_parts(ptr.add(offset_in_page) as *const u8, 0x6C) };
     let result = parse_identity_mac(data);
-    unsafe { libc::munmap(ptr, map_size); }
+    unsafe {
+        libc::munmap(ptr, map_size);
+    }
     result
 }
 
 fn parse_identity_mac(data: &[u8]) -> Option<String> {
-    if data.len() < 0x66 { return None; }
+    if data.len() < 0x66 {
+        return None;
+    }
     let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    if magic != 0x494D564E { return None; } // "NVMI"
-    // MAC at offset 0x060 (6 bytes)
+    if magic != 0x494D564E {
+        return None;
+    } // "NVMI"
+      // MAC at offset 0x060 (6 bytes)
     let mac = &data[0x60..0x66];
-    if mac == [0, 0, 0, 0, 0, 0] { return None; }
-    Some(format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]))
+    if mac == [0, 0, 0, 0, 0, 0] {
+        return None;
+    }
+    Some(format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    ))
 }
 
 fn parse_identity_ip(data: &[u8]) -> Option<String> {
-    if data.len() < 0x6C { return None; }
+    if data.len() < 0x6C {
+        return None;
+    }
     let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    if magic != 0x494D564E { return None; } // "NVMI"
+    if magic != 0x494D564E {
+        return None;
+    } // "NVMI"
     let ip = &data[0x68..0x6C];
-    if ip == [0, 0, 0, 0] { return None; }
+    if ip == [0, 0, 0, 0] {
+        return None;
+    }
     Some(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]))
 }
 
@@ -245,8 +285,7 @@ fn main() {
     // fork's new IP (injected before vCPUs resume), so reading it here
     // would make fork detection impossible.
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
-    let mut current_ip: Option<String> = parse_cmdline_param(&cmdline, "clone.net_ip")
-        .or_else(|| read_identity_ip());
+    let mut current_ip: Option<String> = parse_cmdline_param(&cmdline, "clone.net_ip").or_else(|| read_identity_ip());
 
     loop {
         let fd = match connect_vsock(VMADDR_CID_HOST, agent_port) {
@@ -281,10 +320,15 @@ fn run_agent(fd: i32) {
     let heartbeat_interval = Duration::from_secs(2);
 
     // Set recv timeout to 50ms for fast exec response
-    let tv = libc::timeval { tv_sec: 0, tv_usec: 50_000 };
+    let tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 50_000,
+    };
     unsafe {
         libc::setsockopt(
-            fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
             &tv as *const libc::timeval as *const libc::c_void,
             std::mem::size_of::<libc::timeval>() as libc::socklen_t,
         );
@@ -298,14 +342,17 @@ fn run_agent(fd: i32) {
                     let metrics = collect_metrics();
                     let active = is_active(&metrics, last_load);
                     last_load = metrics.load_avg_1m;
-                    let _ = send_message(fd, &AgentMessage::Heartbeat {
-                        active,
-                        load_avg_1m: metrics.load_avg_1m,
-                        mem_pressure_pct: metrics.mem_pressure_pct,
-                        mem_available_pct: metrics.mem_available_pct,
-                        process_count: metrics.process_count,
-                        uptime_secs: metrics.uptime_secs,
-                    });
+                    let _ = send_message(
+                        fd,
+                        &AgentMessage::Heartbeat {
+                            active,
+                            load_avg_1m: metrics.load_avg_1m,
+                            mem_pressure_pct: metrics.mem_pressure_pct,
+                            mem_available_pct: metrics.mem_available_pct,
+                            process_count: metrics.process_count,
+                            uptime_secs: metrics.uptime_secs,
+                        },
+                    );
                     last_heartbeat = std::time::Instant::now();
                     continue;
                 }
@@ -321,7 +368,10 @@ fn run_agent(fd: i32) {
                         .env("USER", "root")
                         .env("SHELL", "/bin/bash")
                         .env("TERM", "xterm-256color")
-                        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin")
+                        .env(
+                            "PATH",
+                            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin",
+                        )
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped())
                         .spawn()
@@ -391,14 +441,19 @@ fn run_agent(fd: i32) {
             let metrics = collect_metrics();
             let active = is_active(&metrics, last_load);
             last_load = metrics.load_avg_1m;
-            if send_message(fd, &AgentMessage::Heartbeat {
-                active,
-                load_avg_1m: metrics.load_avg_1m,
-                mem_pressure_pct: metrics.mem_pressure_pct,
-                mem_available_pct: metrics.mem_available_pct,
-                process_count: metrics.process_count,
-                uptime_secs: metrics.uptime_secs,
-            }).is_err() {
+            if send_message(
+                fd,
+                &AgentMessage::Heartbeat {
+                    active,
+                    load_avg_1m: metrics.load_avg_1m,
+                    mem_pressure_pct: metrics.mem_pressure_pct,
+                    mem_available_pct: metrics.mem_available_pct,
+                    process_count: metrics.process_count,
+                    uptime_secs: metrics.uptime_secs,
+                },
+            )
+            .is_err()
+            {
                 return;
             }
             last_heartbeat = std::time::Instant::now();
@@ -509,11 +564,19 @@ fn read_mem_available_pct() -> f64 {
     let mut available_kb: u64 = 0;
     for line in contents.lines() {
         if let Some(val) = line.strip_prefix("MemTotal:") {
-            total_kb = val.trim().split_whitespace().next()
-                .and_then(|v| v.parse().ok()).unwrap_or(0);
+            total_kb = val
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
         } else if let Some(val) = line.strip_prefix("MemAvailable:") {
-            available_kb = val.trim().split_whitespace().next()
-                .and_then(|v| v.parse().ok()).unwrap_or(0);
+            available_kb = val
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
         }
     }
     if total_kb == 0 {
@@ -583,10 +646,15 @@ fn connect_vsock(cid: u32, port: u32) -> Option<i32> {
         addr.svm_port = port;
 
         // Fast connect timeout (vsock connects in microseconds)
-        let tv = libc::timeval { tv_sec: 0, tv_usec: 500_000 };
+        let tv = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 500_000,
+        };
         unsafe {
             libc::setsockopt(
-                fd, libc::SOL_SOCKET, libc::SO_SNDTIMEO,
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDTIMEO,
                 &tv as *const libc::timeval as *const libc::c_void,
                 std::mem::size_of::<libc::timeval>() as libc::socklen_t,
             );
@@ -620,15 +688,17 @@ fn send_message(fd: i32, msg: &AgentMessage) -> Result<(), ()> {
     buf.extend_from_slice(&len);
     buf.extend_from_slice(&json);
 
-    let mut pfd = libc::pollfd { fd, events: libc::POLLOUT, revents: 0 };
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
     let poll_ret = unsafe { libc::poll(&mut pfd, 1, 3000) };
     if poll_ret <= 0 || (pfd.revents & (libc::POLLERR | libc::POLLHUP)) != 0 {
         return Err(());
     }
 
-    let written = unsafe {
-        libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len())
-    };
+    let written = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
 
     if written as usize == buf.len() {
         Ok(())
@@ -639,9 +709,7 @@ fn send_message(fd: i32, msg: &AgentMessage) -> Result<(), ()> {
 
 fn recv_message(fd: i32) -> Option<VmmMessage> {
     let mut len_buf = [0u8; 4];
-    let n = unsafe {
-        libc::recv(fd, len_buf.as_mut_ptr() as *mut libc::c_void, 4, 0)
-    };
+    let n = unsafe { libc::recv(fd, len_buf.as_mut_ptr() as *mut libc::c_void, 4, 0) };
     if n != 4 {
         return None;
     }
@@ -654,14 +722,7 @@ fn recv_message(fd: i32) -> Option<VmmMessage> {
     let mut body = vec![0u8; len];
     let mut read = 0;
     while read < len {
-        let n = unsafe {
-            libc::recv(
-                fd,
-                body[read..].as_mut_ptr() as *mut libc::c_void,
-                len - read,
-                0,
-            )
-        };
+        let n = unsafe { libc::recv(fd, body[read..].as_mut_ptr() as *mut libc::c_void, len - read, 0) };
         if n <= 0 {
             return None;
         }

@@ -183,12 +183,7 @@ mod bpf {
     const SECCOMP_DATA_NR_OFFSET: u32 = 0;
 
     fn bpf_stmt(code: u16, k: u32) -> SockFilter {
-        SockFilter {
-            code,
-            jt: 0,
-            jf: 0,
-            k,
-        }
+        SockFilter { code, jt: 0, jf: 0, k }
     }
 
     fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> SockFilter {
@@ -220,12 +215,7 @@ mod bpf {
         // jf (no match) should fall through: 0
         for (i, &syscall_nr) in allowed.iter().enumerate() {
             let jt = (n - i) as u8; // jump forward to RET ALLOW
-            prog.push(bpf_jump(
-                BPF_JMP | BPF_JEQ | BPF_K,
-                syscall_nr as u32,
-                jt,
-                0,
-            ));
+            prog.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, syscall_nr as u32, jt, 0));
         }
 
         // Default: kill
@@ -275,13 +265,9 @@ mod bpf {
 pub fn apply_seccomp_filter(policy: &SeccompPolicy) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        tracing::info!(
-            allowed_syscalls = policy.allowed.len(),
-            "Installing seccomp BPF filter"
-        );
+        tracing::info!(allowed_syscalls = policy.allowed.len(), "Installing seccomp BPF filter");
         let filter = bpf::build_filter(&policy.allowed);
-        bpf::install_filter(&filter)
-            .map_err(|e| anyhow::anyhow!("Failed to install seccomp filter: {e}"))?;
+        bpf::install_filter(&filter).map_err(|e| anyhow::anyhow!("Failed to install seccomp filter: {e}"))?;
         tracing::info!("Seccomp filter installed");
     }
     #[cfg(not(target_os = "linux"))]
@@ -319,29 +305,19 @@ fn apply_jail_linux(chroot_dir: &str, policy: &SeccompPolicy) -> Result<()> {
     let unshare_flags = libc::CLONE_NEWNS | libc::CLONE_NEWPID | libc::CLONE_NEWNET;
     let ret = unsafe { libc::unshare(unshare_flags) };
     if ret != 0 {
-        return Err(anyhow::anyhow!(
-            "unshare failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(anyhow::anyhow!("unshare failed: {}", std::io::Error::last_os_error()));
     }
     tracing::info!("Created new namespaces (mount, pid, net)");
 
     // 2. Chroot to minimal directory
-    let c_dir = CString::new(chroot_dir)
-        .map_err(|e| anyhow::anyhow!("Invalid chroot path: {e}"))?;
+    let c_dir = CString::new(chroot_dir).map_err(|e| anyhow::anyhow!("Invalid chroot path: {e}"))?;
     let ret = unsafe { libc::chroot(c_dir.as_ptr()) };
     if ret != 0 {
-        return Err(anyhow::anyhow!(
-            "chroot failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(anyhow::anyhow!("chroot failed: {}", std::io::Error::last_os_error()));
     }
-    let ret = unsafe { libc::chdir(b"/\0".as_ptr() as *const libc::c_char) };
+    let ret = unsafe { libc::chdir(c"/".as_ptr()) };
     if ret != 0 {
-        return Err(anyhow::anyhow!(
-            "chdir failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(anyhow::anyhow!("chdir failed: {}", std::io::Error::last_os_error()));
     }
     tracing::info!("Chrooted to {chroot_dir}");
 

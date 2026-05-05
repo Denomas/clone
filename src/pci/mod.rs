@@ -8,8 +8,6 @@
 
 pub mod vfio;
 
-use std::collections::HashMap;
-
 /// ECAM base address — below our virtio MMIO region at 0xD000_0000.
 pub const ECAM_BASE: u64 = 0xB000_0000;
 
@@ -126,7 +124,7 @@ impl PciDevice {
         }
 
         // BAR writes need special handling — mask to BAR size alignment
-        if off >= 0x10 && off < 0x28 {
+        if (0x10..0x28).contains(&off) {
             let bar_index = (off - 0x10) / 4;
             if bar_index < self.bars.len() {
                 // Guest is probing BAR size: write all 1s, read back aligned size
@@ -219,8 +217,7 @@ impl PciBus {
 
             // Write BAR value into config space
             let bar_offset = 0x10 + i * 4;
-            let bar_val = (guest_addr as u32) | if is_64bit { 0x4 } else { 0x0 }
-                | if prefetchable { 0x8 } else { 0x0 };
+            let bar_val = (guest_addr as u32) | if is_64bit { 0x4 } else { 0x0 } | if prefetchable { 0x8 } else { 0x0 };
             config[bar_offset..bar_offset + 4].copy_from_slice(&bar_val.to_le_bytes());
 
             // For 64-bit BARs, write upper 32 bits in next BAR slot

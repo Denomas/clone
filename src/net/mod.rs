@@ -11,6 +11,11 @@
 
 use std::os::unix::io::RawFd;
 
+#[cfg(target_os = "linux")]
+use crate::compat::IoctlReq;
+#[cfg(not(target_os = "linux"))]
+type IoctlReq = libc::c_ulong;
+
 /// Network configuration for a VM.
 #[derive(Debug, Clone)]
 pub struct NetworkConfig {
@@ -28,13 +33,7 @@ pub struct NetworkConfig {
 
 impl NetworkConfig {
     /// Create a new network configuration with the given parameters.
-    pub fn new(
-        bridge_name: &str,
-        guest_ip: &str,
-        gateway_ip: &str,
-        netmask: &str,
-        mac_address: [u8; 6],
-    ) -> Self {
+    pub fn new(bridge_name: &str, guest_ip: &str, gateway_ip: &str, netmask: &str, mac_address: [u8; 6]) -> Self {
         Self {
             bridge_name: bridge_name.to_string(),
             guest_ip: guest_ip.to_string(),
@@ -52,9 +51,7 @@ impl NetworkConfig {
             0x02, // locally administered, unicast
             0x4E, // 'N'
             0x56, // 'V'
-            bytes[1],
-            bytes[2],
-            bytes[3],
+            bytes[1], bytes[2], bytes[3],
         ]
     }
 }
@@ -89,7 +86,7 @@ pub fn create_tap(name: &str) -> anyhow::Result<RawFd> {
     const IFF_TAP: libc::c_short = 0x0002;
     const IFF_NO_PI: libc::c_short = 0x1000;
     // TUNSETIFF = _IOW('T', 202, int) = 0x400454CA
-    const TUNSETIFF: libc::c_ulong = 0x400454CA;
+    const TUNSETIFF: IoctlReq = 0x400454CA;
 
     let mut ifr = [0u8; 40]; // ifreq is typically 40 bytes
 
@@ -105,7 +102,9 @@ pub fn create_tap(name: &str) -> anyhow::Result<RawFd> {
     let ret = unsafe { libc::ioctl(fd, TUNSETIFF, ifr.as_ptr()) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         return Err(anyhow::anyhow!("TUNSETIFF failed for {name}: {err}"));
     }
 
@@ -113,13 +112,17 @@ pub fn create_tap(name: &str) -> anyhow::Result<RawFd> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         return Err(anyhow::anyhow!("fcntl F_GETFL failed: {err}"));
     }
     let ret = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         return Err(anyhow::anyhow!("fcntl F_SETFL O_NONBLOCK failed: {err}"));
     }
 
@@ -158,22 +161,19 @@ pub fn configure_tap(fd: RawFd, ip: &str, netmask: &str) -> anyhow::Result<()> {
     // Actually, let's just use a utility ioctl to get the ifr_name.
 
     // TUNGETIFF to retrieve the interface name.
-    const TUNGETIFF: libc::c_ulong = 0x800454D2;
+    const TUNGETIFF: IoctlReq = 0x800454D2u32 as IoctlReq;
     let mut ifr = [0u8; 40];
     let ret = unsafe { libc::ioctl(fd, TUNGETIFF, ifr.as_mut_ptr()) };
     if ret < 0 {
-        unsafe { libc::close(sock); }
-        return Err(anyhow::anyhow!(
-            "TUNGETIFF failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        unsafe {
+            libc::close(sock);
+        }
+        return Err(anyhow::anyhow!("TUNGETIFF failed: {}", std::io::Error::last_os_error()));
     }
 
     // Parse the IP address.
     let ip_addr: Ipv4Addr = ip.parse().map_err(|e| anyhow::anyhow!("Invalid IP: {e}"))?;
-    let netmask_addr: Ipv4Addr = netmask
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid netmask: {e}"))?;
+    let netmask_addr: Ipv4Addr = netmask.parse().map_err(|e| anyhow::anyhow!("Invalid netmask: {e}"))?;
 
     // Helper to build a sockaddr_in and place it in the ifreq union at offset 16.
     fn set_sockaddr_in(ifr: &mut [u8], addr: &Ipv4Addr) {
@@ -192,34 +192,40 @@ pub fn configure_tap(fd: RawFd, ip: &str, netmask: &str) -> anyhow::Result<()> {
     }
 
     // SIOCSIFADDR = 0x8916
-    const SIOCSIFADDR: libc::c_ulong = 0x8916;
+    const SIOCSIFADDR: IoctlReq = 0x8916;
     set_sockaddr_in(&mut ifr, &ip_addr);
     let ret = unsafe { libc::ioctl(sock, SIOCSIFADDR, ifr.as_ptr()) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(sock); }
+        unsafe {
+            libc::close(sock);
+        }
         return Err(anyhow::anyhow!("SIOCSIFADDR failed: {err}"));
     }
 
     // SIOCSIFNETMASK = 0x891C
-    const SIOCSIFNETMASK: libc::c_ulong = 0x891C;
+    const SIOCSIFNETMASK: IoctlReq = 0x891C;
     set_sockaddr_in(&mut ifr, &netmask_addr);
     let ret = unsafe { libc::ioctl(sock, SIOCSIFNETMASK, ifr.as_ptr()) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(sock); }
+        unsafe {
+            libc::close(sock);
+        }
         return Err(anyhow::anyhow!("SIOCSIFNETMASK failed: {err}"));
     }
 
     // Bring the interface up: SIOCSIFFLAGS with IFF_UP.
-    const SIOCSIFFLAGS: libc::c_ulong = 0x8914;
-    const SIOCGIFFLAGS: libc::c_ulong = 0x8913;
+    const SIOCSIFFLAGS: IoctlReq = 0x8914;
+    const SIOCGIFFLAGS: IoctlReq = 0x8913;
 
     // First get current flags.
     let ret = unsafe { libc::ioctl(sock, SIOCGIFFLAGS, ifr.as_mut_ptr()) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(sock); }
+        unsafe {
+            libc::close(sock);
+        }
         return Err(anyhow::anyhow!("SIOCGIFFLAGS failed: {err}"));
     }
     // Set IFF_UP (bit 0) in the flags at offset 16 (as i16).
@@ -230,11 +236,15 @@ pub fn configure_tap(fd: RawFd, ip: &str, netmask: &str) -> anyhow::Result<()> {
     let ret = unsafe { libc::ioctl(sock, SIOCSIFFLAGS, ifr.as_ptr()) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(sock); }
+        unsafe {
+            libc::close(sock);
+        }
         return Err(anyhow::anyhow!("SIOCSIFFLAGS (IFF_UP) failed: {err}"));
     }
 
-    unsafe { libc::close(sock); }
+    unsafe {
+        libc::close(sock);
+    }
 
     tracing::info!("TAP configured: ip={ip}, netmask={netmask}");
     Ok(())
@@ -242,9 +252,7 @@ pub fn configure_tap(fd: RawFd, ip: &str, netmask: &str) -> anyhow::Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn configure_tap(_fd: RawFd, ip: &str, netmask: &str) -> anyhow::Result<()> {
-    tracing::warn!(
-        "TAP configuration not supported on this platform (stub: ip={ip}, netmask={netmask})"
-    );
+    tracing::warn!("TAP configuration not supported on this platform (stub: ip={ip}, netmask={netmask})");
     Ok(())
 }
 
@@ -269,11 +277,13 @@ pub fn setup_bridge(bridge_name: &str, tap_name: &str) -> anyhow::Result<()> {
     ifr[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
 
     // SIOCGIFINDEX = 0x8933
-    const SIOCGIFINDEX: libc::c_ulong = 0x8933;
+    const SIOCGIFINDEX: IoctlReq = 0x8933;
     let ret = unsafe { libc::ioctl(sock, SIOCGIFINDEX, ifr.as_mut_ptr()) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(sock); }
+        unsafe {
+            libc::close(sock);
+        }
         return Err(anyhow::anyhow!("SIOCGIFINDEX for {tap_name} failed: {err}"));
     }
     let ifindex = i32::from_ne_bytes([ifr[16], ifr[17], ifr[18], ifr[19]]);
@@ -286,26 +296,28 @@ pub fn setup_bridge(bridge_name: &str, tap_name: &str) -> anyhow::Result<()> {
     br_ifr[16..20].copy_from_slice(&ifindex.to_ne_bytes());
 
     // SIOCBRADDIF = 0x89A2
-    const SIOCBRADDIF: libc::c_ulong = 0x89A2;
+    const SIOCBRADDIF: IoctlReq = 0x89A2;
     let ret = unsafe { libc::ioctl(sock, SIOCBRADDIF, br_ifr.as_ptr()) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(sock); }
+        unsafe {
+            libc::close(sock);
+        }
         return Err(anyhow::anyhow!(
             "SIOCBRADDIF (add {tap_name} to {bridge_name}) failed: {err}"
         ));
     }
 
-    unsafe { libc::close(sock); }
+    unsafe {
+        libc::close(sock);
+    }
     tracing::info!("Added TAP {tap_name} to bridge {bridge_name}");
     Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
 pub fn setup_bridge(bridge_name: &str, tap_name: &str) -> anyhow::Result<()> {
-    tracing::warn!(
-        "Bridge setup not supported on this platform (stub: bridge={bridge_name}, tap={tap_name})"
-    );
+    tracing::warn!("Bridge setup not supported on this platform (stub: bridge={bridge_name}, tap={tap_name})");
     Ok(())
 }
 
@@ -322,8 +334,12 @@ pub fn setup_vm_network(config: &NetworkConfig) -> anyhow::Result<RawFd> {
     tracing::info!(
         "Setting up VM network: tap={tap_name}, ip={}, mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         config.gateway_ip,
-        config.mac_address[0], config.mac_address[1], config.mac_address[2],
-        config.mac_address[3], config.mac_address[4], config.mac_address[5]
+        config.mac_address[0],
+        config.mac_address[1],
+        config.mac_address[2],
+        config.mac_address[3],
+        config.mac_address[4],
+        config.mac_address[5]
     );
 
     // 1. Create the TAP device.
@@ -333,7 +349,9 @@ pub fn setup_vm_network(config: &NetworkConfig) -> anyhow::Result<RawFd> {
     if let Err(e) = configure_tap(tap_fd, &config.gateway_ip, &config.netmask) {
         // Clean up on failure.
         if tap_fd >= 0 {
-            unsafe { libc::close(tap_fd); }
+            unsafe {
+                libc::close(tap_fd);
+            }
         }
         return Err(e);
     }
@@ -442,7 +460,16 @@ fn ensure_nat() -> anyhow::Result<()> {
 
     // Check if the rule already exists
     let output = Command::new("iptables")
-        .args(["-t", "nat", "-C", "POSTROUTING", "-s", DEFAULT_BRIDGE_CIDR, "-j", "MASQUERADE"])
+        .args([
+            "-t",
+            "nat",
+            "-C",
+            "POSTROUTING",
+            "-s",
+            DEFAULT_BRIDGE_CIDR,
+            "-j",
+            "MASQUERADE",
+        ])
         .output()?;
 
     if output.status.success() {
@@ -450,25 +477,44 @@ fn ensure_nat() -> anyhow::Result<()> {
     }
 
     let _ = Command::new("iptables")
-        .args(["-t", "nat", "-A", "POSTROUTING", "-s", DEFAULT_BRIDGE_CIDR, "-j", "MASQUERADE"])
+        .args([
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            DEFAULT_BRIDGE_CIDR,
+            "-j",
+            "MASQUERADE",
+        ])
         .status();
 
     // FORWARD rules
     let _ = Command::new("iptables")
         .args(["-C", "FORWARD", "-s", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
         .output()
-        .and_then(|o| if o.status.success() { Ok(()) } else {
-            Command::new("iptables")
-                .args(["-A", "FORWARD", "-s", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
-                .status().map(|_| ())
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Command::new("iptables")
+                    .args(["-A", "FORWARD", "-s", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
+                    .status()
+                    .map(|_| ())
+            }
         });
     let _ = Command::new("iptables")
         .args(["-C", "FORWARD", "-d", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
         .output()
-        .and_then(|o| if o.status.success() { Ok(()) } else {
-            Command::new("iptables")
-                .args(["-A", "FORWARD", "-d", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
-                .status().map(|_| ())
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Command::new("iptables")
+                    .args(["-A", "FORWARD", "-d", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
+                    .status()
+                    .map(|_| ())
+            }
         });
 
     Ok(())
@@ -488,8 +534,8 @@ fn bring_interface_up(name: &str) -> anyhow::Result<()> {
     ifr[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
 
     // Get current flags
-    const SIOCGIFFLAGS: libc::c_ulong = 0x8913;
-    const SIOCSIFFLAGS: libc::c_ulong = 0x8914;
+    const SIOCGIFFLAGS: IoctlReq = 0x8913;
+    const SIOCSIFFLAGS: IoctlReq = 0x8914;
 
     let ret = unsafe { libc::ioctl(sock, SIOCGIFFLAGS, ifr.as_mut_ptr()) };
     if ret < 0 {

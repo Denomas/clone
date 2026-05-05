@@ -4,8 +4,8 @@
 //! and IOAPIC. Without these, the kernel falls back to "virtual wire mode"
 //! and timer interrupts don't route properly, stalling the boot.
 
-use anyhow::Result;
 use crate::memory::GuestMem;
+use anyhow::Result;
 
 /// RSDP is placed at 0xE0000 (in the EBDA/ROM region the kernel scans).
 const RSDP_ADDR: u64 = 0x000E_0000;
@@ -96,10 +96,10 @@ fn build_mcfg() -> Vec<u8> {
     // Allocation entry (16 bytes, starting at offset 44)
     let ecam_base: u64 = crate::pci::ECAM_BASE;
     mcfg[44..52].copy_from_slice(&ecam_base.to_le_bytes()); // Base address
-    mcfg[52..54].copy_from_slice(&0u16.to_le_bytes());       // PCI Segment Group
-    mcfg[54] = 0;  // Start Bus Number
-    mcfg[55] = 0;  // End Bus Number (only bus 0)
-    // 4 bytes reserved (56-59) — already zero
+    mcfg[52..54].copy_from_slice(&0u16.to_le_bytes()); // PCI Segment Group
+    mcfg[54] = 0; // Start Bus Number
+    mcfg[55] = 0; // End Bus Number (only bus 0)
+                  // 4 bytes reserved (56-59) — already zero
 
     // Checksum (byte 9)
     let cksum: u8 = mcfg.iter().fold(0u8, |a, &b| a.wrapping_add(b));
@@ -109,7 +109,7 @@ fn build_mcfg() -> Vec<u8> {
 }
 
 /// Build RSDP v2 (Root System Description Pointer).
-fn build_rsdp(xsdt_addr: u64, xsdt_len: u32) -> Vec<u8> {
+fn build_rsdp(xsdt_addr: u64, _xsdt_len: u32) -> Vec<u8> {
     let mut rsdp = vec![0u8; 36]; // RSDP v2 = 36 bytes
 
     // Signature: "RSD PTR " (8 bytes)
@@ -142,14 +142,14 @@ fn build_xsdt(table_addrs: &[u64]) -> Vec<u8> {
     let mut xsdt = vec![0u8; total_len as usize];
 
     // Header
-    xsdt[0..4].copy_from_slice(b"XSDT");                       // Signature
-    xsdt[4..8].copy_from_slice(&total_len.to_le_bytes());       // Length
-    xsdt[8] = 1;                                                 // Revision
-    xsdt[10..16].copy_from_slice(b"CLONE ");                    // OEM ID
-    xsdt[16..24].copy_from_slice(b"CLONE   ");                  // OEM Table ID
-    xsdt[24..28].copy_from_slice(&1u32.to_le_bytes());          // OEM Revision
-    xsdt[28..32].copy_from_slice(b"NVM ");                      // Creator ID
-    xsdt[32..36].copy_from_slice(&1u32.to_le_bytes());          // Creator Revision
+    xsdt[0..4].copy_from_slice(b"XSDT"); // Signature
+    xsdt[4..8].copy_from_slice(&total_len.to_le_bytes()); // Length
+    xsdt[8] = 1; // Revision
+    xsdt[10..16].copy_from_slice(b"CLONE "); // OEM ID
+    xsdt[16..24].copy_from_slice(b"CLONE   "); // OEM Table ID
+    xsdt[24..28].copy_from_slice(&1u32.to_le_bytes()); // OEM Revision
+    xsdt[28..32].copy_from_slice(b"NVM "); // Creator ID
+    xsdt[32..36].copy_from_slice(&1u32.to_le_bytes()); // Creator Revision
 
     // Table pointers
     for (i, &addr) in table_addrs.iter().enumerate() {
@@ -175,14 +175,14 @@ fn build_fadt(dsdt_addr: u64) -> Vec<u8> {
     let mut fadt = vec![0u8; total_len as usize];
 
     // Standard ACPI header (36 bytes)
-    fadt[0..4].copy_from_slice(b"FACP");                          // Signature
-    fadt[4..8].copy_from_slice(&total_len.to_le_bytes());          // Length
-    fadt[8] = 6;                                                    // Revision (ACPI 6.0)
-    fadt[10..16].copy_from_slice(b"CLONE ");                       // OEM ID
-    fadt[16..24].copy_from_slice(b"CLONE   ");                     // OEM Table ID
-    fadt[24..28].copy_from_slice(&1u32.to_le_bytes());             // OEM Revision
-    fadt[28..32].copy_from_slice(b"NVM ");                         // Creator ID
-    fadt[32..36].copy_from_slice(&1u32.to_le_bytes());             // Creator Revision
+    fadt[0..4].copy_from_slice(b"FACP"); // Signature
+    fadt[4..8].copy_from_slice(&total_len.to_le_bytes()); // Length
+    fadt[8] = 6; // Revision (ACPI 6.0)
+    fadt[10..16].copy_from_slice(b"CLONE "); // OEM ID
+    fadt[16..24].copy_from_slice(b"CLONE   "); // OEM Table ID
+    fadt[24..28].copy_from_slice(&1u32.to_le_bytes()); // OEM Revision
+    fadt[28..32].copy_from_slice(b"NVM "); // Creator ID
+    fadt[32..36].copy_from_slice(&1u32.to_le_bytes()); // Creator Revision
 
     // DSDT address (legacy 32-bit field at offset 40)
     fadt[40..44].copy_from_slice(&(dsdt_addr as u32).to_le_bytes());
@@ -247,24 +247,24 @@ fn build_dsdt() -> Vec<u8> {
     //   Total AML = 1(ScopeOp) + 1(PkgLen) + 5(body) = 7 bytes
     let aml: &[u8] = &[
         // Scope (\_SB)
-        0x10,                           // ScopeOp
-        0x06,                           // PkgLength = 6 (1-byte encoding)
-        0x5C,                           // RootChar '\'
-        0x5F, 0x53, 0x42, 0x5F,        // "_SB_"
+        0x10, // ScopeOp
+        0x06, // PkgLength = 6 (1-byte encoding)
+        0x5C, // RootChar '\'
+        0x5F, 0x53, 0x42, 0x5F, // "_SB_"
     ];
 
     let header_len = 36;
     let total_len = (header_len + aml.len()) as u32;
     let mut dsdt = vec![0u8; total_len as usize];
 
-    dsdt[0..4].copy_from_slice(b"DSDT");                          // Signature
-    dsdt[4..8].copy_from_slice(&total_len.to_le_bytes());          // Length
-    dsdt[8] = 2;                                                    // Revision
-    dsdt[10..16].copy_from_slice(b"CLONE ");                       // OEM ID
-    dsdt[16..24].copy_from_slice(b"CLONE   ");                     // OEM Table ID
-    dsdt[24..28].copy_from_slice(&1u32.to_le_bytes());             // OEM Revision
-    dsdt[28..32].copy_from_slice(b"NVM ");                         // Creator ID
-    dsdt[32..36].copy_from_slice(&1u32.to_le_bytes());             // Creator Revision
+    dsdt[0..4].copy_from_slice(b"DSDT"); // Signature
+    dsdt[4..8].copy_from_slice(&total_len.to_le_bytes()); // Length
+    dsdt[8] = 2; // Revision
+    dsdt[10..16].copy_from_slice(b"CLONE "); // OEM ID
+    dsdt[16..24].copy_from_slice(b"CLONE   "); // OEM Table ID
+    dsdt[24..28].copy_from_slice(&1u32.to_le_bytes()); // OEM Revision
+    dsdt[28..32].copy_from_slice(b"NVM "); // Creator ID
+    dsdt[32..36].copy_from_slice(&1u32.to_le_bytes()); // Creator Revision
 
     // Copy AML body after header
     dsdt[header_len..].copy_from_slice(aml);
@@ -302,14 +302,14 @@ fn build_madt(num_cpus: u32) -> Vec<u8> {
     let mut madt = vec![0u8; total_len];
 
     // Standard ACPI header
-    madt[0..4].copy_from_slice(b"APIC");                          // Signature
+    madt[0..4].copy_from_slice(b"APIC"); // Signature
     madt[4..8].copy_from_slice(&(total_len as u32).to_le_bytes()); // Length
-    madt[8] = 4;                                                    // Revision (ACPI 6.0)
-    madt[10..16].copy_from_slice(b"CLONE ");                       // OEM ID
-    madt[16..24].copy_from_slice(b"CLONE   ");                     // OEM Table ID
-    madt[24..28].copy_from_slice(&1u32.to_le_bytes());             // OEM Revision
-    madt[28..32].copy_from_slice(b"NVM ");                         // Creator ID
-    madt[32..36].copy_from_slice(&1u32.to_le_bytes());             // Creator Revision
+    madt[8] = 4; // Revision (ACPI 6.0)
+    madt[10..16].copy_from_slice(b"CLONE "); // OEM ID
+    madt[16..24].copy_from_slice(b"CLONE   "); // OEM Table ID
+    madt[24..28].copy_from_slice(&1u32.to_le_bytes()); // OEM Revision
+    madt[28..32].copy_from_slice(b"NVM "); // Creator ID
+    madt[32..36].copy_from_slice(&1u32.to_le_bytes()); // Creator Revision
 
     // Local Interrupt Controller Address (offset 36)
     madt[36..40].copy_from_slice(&LAPIC_DEFAULT_ADDR.to_le_bytes());
@@ -320,21 +320,21 @@ fn build_madt(num_cpus: u32) -> Vec<u8> {
 
     // Local APIC entries (type 0, length 8)
     for i in 0..num_cpus {
-        madt[offset] = 0;          // Type: Processor Local APIC
-        madt[offset + 1] = 8;      // Length
+        madt[offset] = 0; // Type: Processor Local APIC
+        madt[offset + 1] = 8; // Length
         madt[offset + 2] = i as u8; // ACPI Processor UID
         madt[offset + 3] = i as u8; // APIC ID
-        // Flags: bit 0 = Enabled
+                                    // Flags: bit 0 = Enabled
         madt[offset + 4..offset + 8].copy_from_slice(&1u32.to_le_bytes());
         offset += 8;
     }
 
     // I/O APIC entry (type 1, length 12)
-    madt[offset] = 1;              // Type: I/O APIC
-    madt[offset + 1] = 12;         // Length
-    madt[offset + 2] = 0;          // I/O APIC ID
-    madt[offset + 3] = 0;          // Reserved
-    // I/O APIC Address
+    madt[offset] = 1; // Type: I/O APIC
+    madt[offset + 1] = 12; // Length
+    madt[offset + 2] = 0; // I/O APIC ID
+    madt[offset + 3] = 0; // Reserved
+                          // I/O APIC Address
     madt[offset + 4..offset + 8].copy_from_slice(&IOAPIC_DEFAULT_ADDR.to_le_bytes());
     // Global System Interrupt Base
     madt[offset + 8..offset + 12].copy_from_slice(&0u32.to_le_bytes());
@@ -366,11 +366,11 @@ fn build_madt(num_cpus: u32) -> Vec<u8> {
 
     // Local APIC NMI entry (type 4, length 6)
     // All processors, LINT1 = NMI, flags = 0 (conforms)
-    madt[offset] = 4;       // Type: Local APIC NMI
-    madt[offset + 1] = 6;   // Length
+    madt[offset] = 4; // Type: Local APIC NMI
+    madt[offset + 1] = 6; // Length
     madt[offset + 2] = 0xFF; // ACPI Processor UID (0xFF = all processors)
     madt[offset + 3..offset + 5].copy_from_slice(&0u16.to_le_bytes()); // Flags
-    madt[offset + 5] = 1;   // Local APIC LINT# (1 = LINT1 for NMI)
+    madt[offset + 5] = 1; // Local APIC LINT# (1 = LINT1 for NMI)
 
     // Checksum (byte 9)
     let cksum: u8 = madt.iter().fold(0u8, |a, &b| a.wrapping_add(b));
@@ -381,10 +381,10 @@ fn build_madt(num_cpus: u32) -> Vec<u8> {
 
 /// Write an Interrupt Source Override entry at the given offset.
 fn write_iso(madt: &mut [u8], offset: usize, bus: u8, source: u8, gsi: u32, flags: u16) {
-    madt[offset] = 2;              // Type: Interrupt Source Override
-    madt[offset + 1] = 10;         // Length
-    madt[offset + 2] = bus;        // Bus (0 = ISA)
-    madt[offset + 3] = source;     // Source (ISA IRQ)
+    madt[offset] = 2; // Type: Interrupt Source Override
+    madt[offset + 1] = 10; // Length
+    madt[offset + 2] = bus; // Bus (0 = ISA)
+    madt[offset + 3] = source; // Source (ISA IRQ)
     madt[offset + 4..offset + 8].copy_from_slice(&gsi.to_le_bytes()); // Global System Interrupt
     madt[offset + 8..offset + 10].copy_from_slice(&flags.to_le_bytes()); // Flags
 }
@@ -476,9 +476,9 @@ mod tests {
         // 44 + 4*8 + 12 + 50 + 6 = 144
         assert_eq!(madt.len(), 144);
         // Check CPU 3's LAPIC entry (at offset 44 + 3*8 = 68)
-        assert_eq!(madt[68], 0);     // type
-        assert_eq!(madt[70], 3);     // processor UID
-        assert_eq!(madt[71], 3);     // APIC ID
+        assert_eq!(madt[68], 0); // type
+        assert_eq!(madt[70], 3); // processor UID
+        assert_eq!(madt[71], 3); // APIC ID
     }
 
     #[test]
@@ -543,7 +543,11 @@ mod tests {
     fn test_fadt_no_hw_reduced_flag() {
         let fadt = build_fadt(0x1000);
         let flags = u32::from_le_bytes(fadt[112..116].try_into().unwrap());
-        assert_eq!(flags & (1 << 20), 0, "HW_REDUCED_ACPI flag must NOT be set (breaks IOAPIC)");
+        assert_eq!(
+            flags & (1 << 20),
+            0,
+            "HW_REDUCED_ACPI flag must NOT be set (breaks IOAPIC)"
+        );
     }
 
     #[test]

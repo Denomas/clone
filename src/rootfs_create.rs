@@ -42,20 +42,17 @@ pub fn create_rootfs(source: &RootfsSource, size: &str, output: &str) -> Result<
     println!("Creating rootfs image: {output} ({size})");
 
     // 1. Create sparse image
-    run_cmd("truncate", &["-s", &size_bytes.to_string(), output])
-        .context("Failed to create sparse image")?;
+    run_cmd("truncate", &["-s", &size_bytes.to_string(), output]).context("Failed to create sparse image")?;
 
     // 2. Format with ext4
     println!("Formatting with ext4...");
-    run_cmd("mkfs.ext4", &["-q", "-F", "-L", "clone-rootfs", output])
-        .context("Failed to format image with ext4")?;
+    run_cmd("mkfs.ext4", &["-q", "-F", "-L", "clone-rootfs", output]).context("Failed to format image with ext4")?;
 
     // 3. Mount via loop device
     let mount_dir = format!("/tmp/clone-rootfs-{}", std::process::id());
     std::fs::create_dir_all(&mount_dir)?;
 
-    run_cmd("mount", &["-o", "loop", output, &mount_dir])
-        .context("Failed to mount image (are you root?)")?;
+    run_cmd("mount", &["-o", "loop", output, &mount_dir]).context("Failed to mount image (are you root?)")?;
 
     // From here on, ensure we unmount on error
     let result = populate_rootfs(source, &mount_dir);
@@ -90,8 +87,7 @@ fn populate_rootfs(source: &RootfsSource, mount_dir: &str) -> Result<()> {
         },
         RootfsSource::FromDir(dir) => {
             println!("Copying from directory: {dir}");
-            run_cmd("cp", &["-a", &format!("{dir}/."), mount_dir])
-                .context("Failed to copy directory contents")?;
+            run_cmd("cp", &["-a", &format!("{dir}/."), mount_dir]).context("Failed to copy directory contents")?;
             Ok(())
         }
         RootfsSource::FromDocker(image) => import_docker(image, mount_dir),
@@ -132,8 +128,7 @@ fn bootstrap_alpine(mount_dir: &str, release: Option<&str>) -> Result<()> {
 
     // Extract into mount dir
     println!("Extracting...");
-    run_cmd("tar", &["xzf", &tarball_path, "-C", mount_dir])
-        .context("Failed to extract Alpine minirootfs")?;
+    run_cmd("tar", &["xzf", &tarball_path, "-C", mount_dir]).context("Failed to extract Alpine minirootfs")?;
 
     let _ = std::fs::remove_file(&tarball_path);
 
@@ -169,8 +164,11 @@ fn bootstrap_ubuntu(mount_dir: &str, suite: &str) -> Result<()> {
     println!("Bootstrapping {suite} with debootstrap...");
 
     // Check that debootstrap is available
-    if Command::new("which").arg("debootstrap").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
+    if Command::new("which")
+        .arg("debootstrap")
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
     {
         anyhow::bail!(
             "debootstrap is not installed. Install it with:\n  \
@@ -180,12 +178,10 @@ fn bootstrap_ubuntu(mount_dir: &str, suite: &str) -> Result<()> {
 
     // Use DEBOOTSTRAP_MIRROR env var if set, otherwise use a fast US mirror.
     // Operators can set DEBOOTSTRAP_MIRROR for local/regional mirrors.
-    let mirror = std::env::var("DEBOOTSTRAP_MIRROR")
-        .unwrap_or_else(|_| "http://archive.ubuntu.com/ubuntu".to_string());
+    let mirror = std::env::var("DEBOOTSTRAP_MIRROR").unwrap_or_else(|_| "http://archive.ubuntu.com/ubuntu".to_string());
     println!("Using mirror: {mirror}");
 
-    run_cmd("debootstrap", &["--variant=minbase", suite, mount_dir, &mirror])
-        .context("debootstrap failed")?;
+    run_cmd("debootstrap", &["--variant=minbase", suite, mount_dir, &mirror]).context("debootstrap failed")?;
 
     Ok(())
 }
@@ -195,8 +191,7 @@ fn import_docker(image: &str, mount_dir: &str) -> Result<()> {
     println!("Importing Docker image: {image}");
 
     // Pull the image
-    run_cmd("docker", &["pull", image])
-        .context("Failed to pull Docker image")?;
+    run_cmd("docker", &["pull", image]).context("Failed to pull Docker image")?;
 
     // Create a container (don't start it)
     let output = Command::new("docker")
@@ -212,7 +207,12 @@ fn import_docker(image: &str, mount_dir: &str) -> Result<()> {
 
     // Export the container filesystem
     let tarball = format!("/tmp/clone-docker-{}.tar", std::process::id());
-    let export_result = run_cmd_piped("docker", &["export", &container_id], "tar", &["xf", "-", "-C", mount_dir]);
+    let export_result = run_cmd_piped(
+        "docker",
+        &["export", &container_id],
+        "tar",
+        &["xf", "-", "-C", mount_dir],
+    );
 
     // Clean up container
     let _ = run_cmd("docker", &["rm", &container_id]);
@@ -339,10 +339,7 @@ WantedBy=multi-user.target
     );
 
     // Mask the default serial-getty to avoid the 90s udev wait
-    let _ = std::os::unix::fs::symlink(
-        "/dev/null",
-        format!("{service_dir}/serial-getty@ttyS0.service"),
-    );
+    let _ = std::os::unix::fs::symlink("/dev/null", format!("{service_dir}/serial-getty@ttyS0.service"));
 
     Ok(())
 }
@@ -359,10 +356,7 @@ fn configure_openrc_console(mount_dir: &str) -> Result<()> {
     // Enable it
     let runlevel_dir = format!("{mount_dir}/etc/runlevels/default");
     let _ = std::fs::create_dir_all(&runlevel_dir);
-    let _ = std::os::unix::fs::symlink(
-        "/etc/init.d/ttyS0",
-        format!("{runlevel_dir}/ttyS0"),
-    );
+    let _ = std::os::unix::fs::symlink("/etc/init.d/ttyS0", format!("{runlevel_dir}/ttyS0"));
 
     Ok(())
 }
@@ -380,9 +374,7 @@ fn parse_size(size: &str) -> Result<u64> {
         (size, 1u64)
     };
 
-    let num: u64 = num_str
-        .parse()
-        .with_context(|| format!("Invalid size: {size}"))?;
+    let num: u64 = num_str.parse().with_context(|| format!("Invalid size: {size}"))?;
 
     Ok(num * multiplier)
 }

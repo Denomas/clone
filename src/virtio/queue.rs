@@ -105,7 +105,9 @@ impl Virtqueue {
     /// Mark the queue as ready (or not).
     /// Sync last_avail_idx from the guest's avail ring (used during restore).
     pub fn sync_avail_from_guest(&mut self) {
-        if self.guest_mem.is_null() || self.avail_ring == 0 { return; }
+        if self.guest_mem.is_null() || self.avail_ring == 0 {
+            return;
+        }
         self.last_avail_idx = self.read_avail_idx();
     }
 
@@ -142,14 +144,18 @@ impl Virtqueue {
     fn gpa_to_offset(&self, gpa: u64) -> Option<usize> {
         if self.hole_start == 0 {
             // No hole — direct mapping
-            if gpa >= self.guest_mem_size { return None; }
+            if gpa >= self.guest_mem_size {
+                return None;
+            }
             return Some(gpa as usize);
         }
         if gpa < self.hole_start {
             Some(gpa as usize)
         } else if gpa >= self.hole_end {
             let offset = self.hole_start + (gpa - self.hole_end);
-            if offset >= self.guest_mem_size { return None; }
+            if offset >= self.guest_mem_size {
+                return None;
+            }
             Some(offset as usize)
         } else {
             None // In the MMIO hole — no backing memory
@@ -159,27 +165,26 @@ impl Virtqueue {
     /// Read bytes from guest memory at the given guest physical address.
     fn guest_read(&self, gpa: u64, len: u64) -> Option<&[u8]> {
         let offset = self.gpa_to_offset(gpa)?;
-        if offset + len as usize > self.guest_mem_size as usize { return None; }
-        if self.guest_mem.is_null() { return None; }
-        unsafe {
-            Some(std::slice::from_raw_parts(
-                self.guest_mem.add(offset),
-                len as usize,
-            ))
+        if offset + len as usize > self.guest_mem_size as usize {
+            return None;
         }
+        if self.guest_mem.is_null() {
+            return None;
+        }
+        unsafe { Some(std::slice::from_raw_parts(self.guest_mem.add(offset), len as usize)) }
     }
 
     /// Get a mutable slice of guest memory at the given GPA.
+    #[allow(clippy::mut_from_ref)]
     fn guest_write(&self, gpa: u64, len: u64) -> Option<&mut [u8]> {
         let offset = self.gpa_to_offset(gpa)?;
-        if offset + len as usize > self.guest_mem_size as usize { return None; }
-        if self.guest_mem.is_null() { return None; }
-        unsafe {
-            Some(std::slice::from_raw_parts_mut(
-                self.guest_mem.add(offset),
-                len as usize,
-            ))
+        if offset + len as usize > self.guest_mem_size as usize {
+            return None;
         }
+        if self.guest_mem.is_null() {
+            return None;
+        }
+        unsafe { Some(std::slice::from_raw_parts_mut(self.guest_mem.add(offset), len as usize)) }
     }
 
     fn read_u16(&self, gpa: u64) -> Option<u16> {
@@ -195,8 +200,7 @@ impl Virtqueue {
     fn read_u64(&self, gpa: u64) -> Option<u64> {
         let bytes = self.guest_read(gpa, 8)?;
         Some(u64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]))
     }
 
@@ -243,9 +247,7 @@ impl Virtqueue {
 
         // Read the head descriptor index from avail.ring[last_avail_idx % size]
         let ring_entry_offset = (self.last_avail_idx % self.size) as u64;
-        let head_idx = self.read_u16(
-            self.avail_ring + AVAIL_RING_HEADER + ring_entry_offset * 2,
-        )?;
+        let head_idx = self.read_u16(self.avail_ring + AVAIL_RING_HEADER + ring_entry_offset * 2)?;
 
         // Walk the descriptor chain
         let mut descriptors = Vec::new();
@@ -400,10 +402,7 @@ mod tests {
 
         fn read_u32(&self, offset: u64) -> u32 {
             let off = offset as usize;
-            u32::from_le_bytes([
-                self.mem[off], self.mem[off + 1],
-                self.mem[off + 2], self.mem[off + 3],
-            ])
+            u32::from_le_bytes([self.mem[off], self.mem[off + 1], self.mem[off + 2], self.mem[off + 3]])
         }
 
         /// Write a descriptor at the given index in the descriptor table.

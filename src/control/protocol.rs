@@ -381,10 +381,7 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let deserialized: Request = serde_json::from_str(&json).unwrap();
         match deserialized {
-            Request::Snapshot {
-                vm_id,
-                output_path,
-            } => {
+            Request::Snapshot { vm_id, output_path } => {
                 assert_eq!(vm_id, "vm-0001");
                 assert_eq!(output_path, "/tmp/snap");
             }
@@ -436,7 +433,9 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let deserialized: Response = serde_json::from_str(&json).unwrap();
         match deserialized {
-            Response::Ok { body: ResponseBody::Ack {} } => {}
+            Response::Ok {
+                body: ResponseBody::Ack {},
+            } => {}
             _ => panic!("Wrong variant"),
         }
     }
@@ -523,10 +522,7 @@ mod tests {
 
         match deserialized {
             Request::CreateVm {
-                kernel,
-                mem_mb,
-                vcpus,
-                ..
+                kernel, mem_mb, vcpus, ..
             } => {
                 assert_eq!(kernel, "/kernel");
                 assert_eq!(mem_mb, 128);

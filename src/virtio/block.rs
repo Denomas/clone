@@ -79,7 +79,7 @@ enum BlockBackend {
     /// Raw disk image — direct seek/read/write.
     Raw(File),
     /// QCOW2 disk image — translated through L1/L2 tables.
-    Qcow2(Qcow2File),
+    Qcow2(Box<Qcow2File>),
 }
 
 /// A virtio-block device backed by a disk image file.
@@ -115,13 +115,7 @@ impl VirtioBlock {
     /// Create a new virtio-block device from an already-opened raw file.
     ///
     /// `capacity_sectors` is the disk size in 512-byte sectors.
-    pub fn new(
-        file: File,
-        path: PathBuf,
-        format: DiskFormat,
-        readonly: bool,
-        capacity_sectors: u64,
-    ) -> Self {
+    pub fn new(file: File, path: PathBuf, format: DiskFormat, readonly: bool, capacity_sectors: u64) -> Self {
         Self {
             backend: BlockBackend::Raw(file),
             path,
@@ -159,7 +153,7 @@ impl VirtioBlock {
                 );
 
                 Ok(Self {
-                    backend: BlockBackend::Qcow2(qcow2),
+                    backend: BlockBackend::Qcow2(Box::new(qcow2)),
                     path,
                     format: disk.format,
                     readonly,
@@ -192,12 +186,7 @@ impl VirtioBlock {
     /// In the full MMIO wiring, the transport layer parses the virtio_blk_req
     /// header from the descriptor chain and calls these methods. We expose
     /// them publicly so the transport can drive I/O.
-    pub fn process_request(
-        &mut self,
-        request_type: u32,
-        sector: u64,
-        data: &mut [u8],
-    ) -> u8 {
+    pub fn process_request(&mut self, request_type: u32, sector: u64, data: &mut [u8]) -> u8 {
         match request_type {
             VIRTIO_BLK_T_IN => self.do_read(sector, data),
             VIRTIO_BLK_T_OUT => self.do_write(sector, data),
@@ -429,12 +418,7 @@ impl VirtioDevice for VirtioBlock {
         }
     }
 
-    fn process_descriptor_chain(
-        &mut self,
-        _queue_index: u16,
-        chain: &DescriptorChain,
-        vq: &Virtqueue,
-    ) -> u32 {
+    fn process_descriptor_chain(&mut self, _queue_index: u16, chain: &DescriptorChain, vq: &Virtqueue) -> u32 {
         // A virtio-block request is:
         //   Descriptor 0: readable — virtio_blk_req header (type: u32, reserved: u32, sector: u64)
         //   Descriptor 1..N-1: data buffer(s) — readable for writes, writable for reads
@@ -459,13 +443,17 @@ impl VirtioDevice for VirtioBlock {
             }
         };
 
-        let request_type = u32::from_le_bytes([
-            header_data[0], header_data[1], header_data[2], header_data[3],
-        ]);
+        let request_type = u32::from_le_bytes([header_data[0], header_data[1], header_data[2], header_data[3]]);
         // bytes 4-7: reserved
         let sector = u64::from_le_bytes([
-            header_data[8], header_data[9], header_data[10], header_data[11],
-            header_data[12], header_data[13], header_data[14], header_data[15],
+            header_data[8],
+            header_data[9],
+            header_data[10],
+            header_data[11],
+            header_data[12],
+            header_data[13],
+            header_data[14],
+            header_data[15],
         ]);
 
         let mut total_written: u32 = 0;
@@ -576,7 +564,9 @@ impl VirtioDevice for VirtioBlock {
         total_written
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn reset(&mut self) {
         self.acked_features_low = 0;
         self.acked_features_high = 0;
@@ -595,7 +585,9 @@ impl VirtioDevice for VirtioBlock {
     }
 
     fn restore_state(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        if data.is_empty() { return Ok(()); }
+        if data.is_empty() {
+            return Ok(());
+        }
         let state: serde_json::Value = serde_json::from_slice(data)?;
         if let Some(v) = state.get("acked_features_low").and_then(|v| v.as_u64()) {
             self.acked_features_low = v as u32;

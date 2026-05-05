@@ -158,12 +158,7 @@ impl BalloonPolicy {
 
     /// For testing: create a policy with controllable timestamps.
     #[cfg(test)]
-    fn new_with_times(
-        total_pages: u64,
-        floor_mb: u32,
-        last_active: Instant,
-        last_deflate: Instant,
-    ) -> Self {
+    fn new_with_times(total_pages: u64, floor_mb: u32, last_active: Instant, last_deflate: Instant) -> Self {
         let floor_pages = (floor_mb as u64 * 1024 * 1024) / 4096;
         let max_reclaimable = total_pages.saturating_sub(floor_pages);
 

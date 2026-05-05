@@ -223,8 +223,8 @@ impl IoUringBlockIo {
     pub fn new(file: &File, queue_depth: u32) -> anyhow::Result<Self> {
         use std::os::unix::io::AsRawFd;
 
-        let ring = io_uring::IoUring::new(queue_depth)
-            .map_err(|e| anyhow::anyhow!("Failed to create io_uring: {e}"))?;
+        let ring =
+            io_uring::IoUring::new(queue_depth).map_err(|e| anyhow::anyhow!("Failed to create io_uring: {e}"))?;
         let fd = file.as_raw_fd();
 
         tracing::info!(fd, queue_depth, "io_uring block I/O engine initialized");
@@ -236,14 +236,10 @@ impl IoUringBlockIo {
     ///
     /// Reads `len` bytes at `offset` into `buf`.
     pub fn read_at(&mut self, buf: &mut [u8], offset: u64) -> anyhow::Result<usize> {
-        let read_e = io_uring::opcode::Read::new(
-            io_uring::types::Fd(self.fd),
-            buf.as_mut_ptr(),
-            buf.len() as u32,
-        )
-        .offset(offset)
-        .build()
-        .user_data(0x01);
+        let read_e = io_uring::opcode::Read::new(io_uring::types::Fd(self.fd), buf.as_mut_ptr(), buf.len() as u32)
+            .offset(offset)
+            .build()
+            .user_data(0x01);
 
         unsafe {
             self.ring
@@ -254,7 +250,10 @@ impl IoUringBlockIo {
 
         self.ring.submit_and_wait(1)?;
 
-        let cqe = self.ring.completion().next()
+        let cqe = self
+            .ring
+            .completion()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("io_uring: no completion entry"))?;
 
         let result = cqe.result();
@@ -272,14 +271,10 @@ impl IoUringBlockIo {
     ///
     /// Writes `buf` at `offset`.
     pub fn write_at(&mut self, buf: &[u8], offset: u64) -> anyhow::Result<usize> {
-        let write_e = io_uring::opcode::Write::new(
-            io_uring::types::Fd(self.fd),
-            buf.as_ptr(),
-            buf.len() as u32,
-        )
-        .offset(offset)
-        .build()
-        .user_data(0x02);
+        let write_e = io_uring::opcode::Write::new(io_uring::types::Fd(self.fd), buf.as_ptr(), buf.len() as u32)
+            .offset(offset)
+            .build()
+            .user_data(0x02);
 
         unsafe {
             self.ring
@@ -290,7 +285,10 @@ impl IoUringBlockIo {
 
         self.ring.submit_and_wait(1)?;
 
-        let cqe = self.ring.completion().next()
+        let cqe = self
+            .ring
+            .completion()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("io_uring: no completion entry"))?;
 
         let result = cqe.result();
@@ -306,11 +304,9 @@ impl IoUringBlockIo {
 
     /// Submit a fsync operation and wait for completion.
     pub fn fsync(&mut self) -> anyhow::Result<()> {
-        let fsync_e = io_uring::opcode::Fsync::new(
-            io_uring::types::Fd(self.fd),
-        )
-        .build()
-        .user_data(0x03);
+        let fsync_e = io_uring::opcode::Fsync::new(io_uring::types::Fd(self.fd))
+            .build()
+            .user_data(0x03);
 
         unsafe {
             self.ring
@@ -321,7 +317,10 @@ impl IoUringBlockIo {
 
         self.ring.submit_and_wait(1)?;
 
-        let cqe = self.ring.completion().next()
+        let cqe = self
+            .ring
+            .completion()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("io_uring: no completion entry"))?;
 
         let result = cqe.result();

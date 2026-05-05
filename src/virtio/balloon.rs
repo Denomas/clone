@@ -116,11 +116,7 @@ impl VirtioBalloon {
         if old != num_pages {
             self.config.num_pages.store(num_pages, Ordering::Release);
             self.config_interrupt_pending = true;
-            tracing::info!(
-                old_pages = old,
-                new_pages = num_pages,
-                "balloon target updated"
-            );
+            tracing::info!(old_pages = old, new_pages = num_pages, "balloon target updated");
         }
     }
 
@@ -140,16 +136,16 @@ impl VirtioBalloon {
                 continue;
             }
 
-            // For VMs > 3GB, memory is split around the MMIO hole (3-4GB).
-            // Guest addresses above 4GB map to host mmap offset 3GB+.
-            let host_offset = if guest_addr >= MMIO_HOLE_END {
-                MMIO_HOLE_START + (guest_addr - MMIO_HOLE_END)
-            } else {
-                guest_addr
-            };
-
             #[cfg(target_os = "linux")]
             {
+                // For VMs > 3GB, memory is split around the MMIO hole (3-4GB).
+                // Guest addresses above 4GB map to host mmap offset 3GB+.
+                let host_offset = if guest_addr >= MMIO_HOLE_END {
+                    MMIO_HOLE_START + (guest_addr - MMIO_HOLE_END)
+                } else {
+                    guest_addr
+                };
+
                 // SAFETY: host_offset is within the mmap region after MMIO hole translation.
                 let ret = unsafe {
                     libc::madvise(
@@ -257,12 +253,8 @@ impl VirtioDevice for VirtioBalloon {
 
         // Read current config, overlay the write, store back.
         let mut config_bytes = [0u8; 8];
-        config_bytes[0..4].copy_from_slice(
-            &self.config.num_pages.load(Ordering::Relaxed).to_le_bytes(),
-        );
-        config_bytes[4..8].copy_from_slice(
-            &self.config.actual.load(Ordering::Relaxed).to_le_bytes(),
-        );
+        config_bytes[0..4].copy_from_slice(&self.config.num_pages.load(Ordering::Relaxed).to_le_bytes());
+        config_bytes[4..8].copy_from_slice(&self.config.actual.load(Ordering::Relaxed).to_le_bytes());
 
         let end = std::cmp::min(offset + data.len(), 8);
         config_bytes[offset..end].copy_from_slice(&data[..end - offset]);
@@ -296,12 +288,7 @@ impl VirtioDevice for VirtioBalloon {
         Ok(())
     }
 
-    fn process_descriptor_chain(
-        &mut self,
-        queue_index: u16,
-        chain: &DescriptorChain,
-        vq: &Virtqueue,
-    ) -> u32 {
+    fn process_descriptor_chain(&mut self, queue_index: u16, chain: &DescriptorChain, vq: &Virtqueue) -> u32 {
         // Balloon descriptors contain arrays of u32 PFNs.
         // All descriptors in the chain are readable (guest provides PFN data).
         let mut pfns = Vec::new();
@@ -316,9 +303,7 @@ impl VirtioDevice for VirtioBalloon {
                 let count = data.len() / 4;
                 for i in 0..count {
                     let off = i * 4;
-                    let pfn = u32::from_le_bytes([
-                        data[off], data[off + 1], data[off + 2], data[off + 3],
-                    ]);
+                    let pfn = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
                     pfns.push(pfn);
                 }
             }
@@ -337,7 +322,9 @@ impl VirtioDevice for VirtioBalloon {
         0 // Balloon doesn't write data back to descriptors
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn reset(&mut self) {
         self.config.num_pages.store(0, Ordering::Release);
         self.config.actual.store(0, Ordering::Release);
@@ -357,10 +344,14 @@ impl VirtioDevice for VirtioBalloon {
     }
 
     fn restore_state(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        if data.is_empty() { return Ok(()); }
+        if data.is_empty() {
+            return Ok(());
+        }
         let state: serde_json::Value = serde_json::from_slice(data)?;
         if let Some(v) = state.get("num_pages").and_then(|v| v.as_u64()) {
-            self.config.num_pages.store(v as u32, std::sync::atomic::Ordering::Relaxed);
+            self.config
+                .num_pages
+                .store(v as u32, std::sync::atomic::Ordering::Relaxed);
         }
         if let Some(v) = state.get("actual").and_then(|v| v.as_u64()) {
             self.config.actual.store(v as u32, std::sync::atomic::Ordering::Relaxed);

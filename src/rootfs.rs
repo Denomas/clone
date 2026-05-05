@@ -54,10 +54,7 @@ pub fn find_init_binary() -> Result<PathBuf> {
     }
 
     // 3. In PATH
-    if let Ok(output) = std::process::Command::new("which")
-        .arg("clone-init")
-        .output()
-    {
+    if let Ok(output) = std::process::Command::new("which").arg("clone-init").output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
@@ -92,10 +89,7 @@ pub fn find_agent_binary() -> Option<PathBuf> {
             }
         }
     }
-    if let Ok(output) = std::process::Command::new("which")
-        .arg("clone-agent")
-        .output()
-    {
+    if let Ok(output) = std::process::Command::new("which").arg("clone-agent").output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
@@ -113,9 +107,7 @@ pub fn find_agent_binary() -> Option<PathBuf> {
 /// can load them before switching root into the real rootfs.
 fn embed_kernel_modules(cpio: &mut Vec<u8>) {
     let uname = match std::process::Command::new("uname").arg("-r").output() {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => return,
     };
 
@@ -181,13 +173,20 @@ fn embed_kernel_modules(cpio: &mut Vec<u8>) {
 ///
 /// Returns the initrd contents as a byte vector.
 pub fn generate_initrd(init_binary: &Path) -> Result<Vec<u8>> {
-    let init_data =
-        fs::read(init_binary).with_context(|| format!("Failed to read {}", init_binary.display()))?;
+    let init_data = fs::read(init_binary).with_context(|| format!("Failed to read {}", init_binary.display()))?;
 
     let mut cpio = Vec::new();
 
     // Create directory entries: /dev, /proc, /sys, /mnt
-    for dir in &["/dev", "/proc", "/sys", "/mnt", "/mnt/root", "/mnt/merged", "/mnt/overlay"] {
+    for dir in &[
+        "/dev",
+        "/proc",
+        "/sys",
+        "/mnt",
+        "/mnt/root",
+        "/mnt/merged",
+        "/mnt/overlay",
+    ] {
         cpio_write_entry(&mut cpio, dir, 0o040755, &[]);
     }
 
@@ -215,10 +214,7 @@ pub fn generate_initrd(init_binary: &Path) -> Result<Vec<u8>> {
         match fs::read(&agent_path) {
             Ok(agent_data) => {
                 cpio_write_entry(&mut cpio, "/clone-agent", 0o100755, &agent_data);
-                tracing::info!(
-                    "Embedded clone-agent in initrd ({} bytes)",
-                    agent_data.len()
-                );
+                tracing::info!("Embedded clone-agent in initrd ({} bytes)", agent_data.len());
             }
             Err(e) => {
                 tracing::warn!("Failed to read clone-agent at {}: {e}", agent_path.display());

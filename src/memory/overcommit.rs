@@ -5,7 +5,6 @@
 /// - Billing: charge only for private pages
 /// - Monitoring: overcommit ratio per host
 /// - Dirty page tracking for incremental snapshots
-
 pub struct OvercommitTracker {
     /// Total guest pages
     total_pages: u64,
@@ -28,11 +27,7 @@ impl OvercommitTracker {
         let mut vec = vec![0u8; page_count];
 
         let resident = unsafe {
-            let ret = libc::mincore(
-                mem_ptr as *mut libc::c_void,
-                mem_size as usize,
-                vec.as_mut_ptr(),
-            );
+            let ret = libc::mincore(mem_ptr as *mut libc::c_void, mem_size as usize, vec.as_mut_ptr());
             if ret != 0 {
                 tracing::warn!("mincore failed: {}", std::io::Error::last_os_error());
                 return;
@@ -90,12 +85,13 @@ impl DirtyPageTracker {
     /// The bitmap has one bit per page. A set bit means the page was written
     /// since the last call to get_dirty_bitmap (or since dirty logging was enabled).
     pub fn get_dirty_bitmap(&self, vm_fd: &kvm_ioctls::VmFd) -> anyhow::Result<Vec<u8>> {
-        let bitmap = vm_fd.get_dirty_log(0, self.mem_size as usize)
+        let bitmap = vm_fd
+            .get_dirty_log(0, self.mem_size as usize)
             .map_err(|e| anyhow::anyhow!("get_dirty_log failed: {e}"))?;
 
         // Convert the kvm dirty log bitmap to a byte vec
         // KVM returns a bitmap where each bit represents a page
-        let bitmap_size = ((self.total_pages + 63) / 64 * 8) as usize;
+        let bitmap_size = (self.total_pages.div_ceil(64) * 8) as usize;
         let mut result = vec![0u8; bitmap_size];
 
         // The dirty log is returned as a Vec<u64> of atomic bitmap words
@@ -148,17 +144,12 @@ impl DirtyPageTracker {
 
             if byte_idx < bitmap.len() && (bitmap[byte_idx] & (1 << bit_idx)) != 0 {
                 let offset = page_idx * 4096;
-                let page_data = unsafe {
-                    std::slice::from_raw_parts(guest_mem.add(offset as usize), 4096)
-                };
+                let page_data = unsafe { std::slice::from_raw_parts(guest_mem.add(offset as usize), 4096) };
                 dirty_data.extend_from_slice(page_data);
             }
         }
 
-        tracing::info!(
-            dirty_data_size = dirty_data.len(),
-            "Collected dirty page data"
-        );
+        tracing::info!(dirty_data_size = dirty_data.len(), "Collected dirty page data");
 
         Ok((bitmap, dirty_data))
     }

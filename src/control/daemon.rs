@@ -5,12 +5,13 @@
 //! - DestroyVm sends Shutdown to the per-VM control socket
 //! - Monitors child processes for unexpected exits
 
-use std::sync::Arc;
 use anyhow::Result;
+use std::sync::Arc;
 
 /// Spawn a new VM as a child process.
 ///
 /// Runs `clone run` with the given parameters and returns the child PID.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_vm(
     kernel: &str,
     initrd: Option<&str>,
@@ -27,15 +28,18 @@ pub fn spawn_vm(
     jail: Option<&str>,
     cid: Option<u64>,
 ) -> Result<u32> {
-    let exe = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("clone"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("clone"));
 
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("run")
-        .arg("--kernel").arg(kernel)
-        .arg("--cmdline").arg(cmdline)
-        .arg("--mem-mb").arg(mem_mb.to_string())
-        .arg("--vcpus").arg(vcpus.to_string());
+        .arg("--kernel")
+        .arg(kernel)
+        .arg("--cmdline")
+        .arg(cmdline)
+        .arg("--mem-mb")
+        .arg(mem_mb.to_string())
+        .arg("--vcpus")
+        .arg(vcpus.to_string());
 
     if let Some(i) = initrd {
         cmd.arg("--initrd").arg(i);
@@ -73,7 +77,8 @@ pub fn spawn_vm(
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
 
-    let child = cmd.spawn()
+    let child = cmd
+        .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn VM process: {e}"))?;
 
     let pid = child.id();
@@ -99,12 +104,10 @@ pub fn spawn_fork(
     vcpus: Option<u32>,
     overlay_size: Option<&str>,
 ) -> Result<u32> {
-    let exe = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("clone"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("clone"));
 
     let mut cmd = std::process::Command::new(&exe);
-    cmd.arg("fork")
-        .arg("--template").arg(template_path);
+    cmd.arg("fork").arg("--template").arg(template_path);
 
     if net {
         cmd.arg("--net");
@@ -129,7 +132,8 @@ pub fn spawn_fork(
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
 
-    let child = cmd.spawn()
+    let child = cmd
+        .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn fork process: {e}"))?;
 
     let pid = child.id();
@@ -157,8 +161,7 @@ pub fn snapshot_vm(control_socket: &str, output_path: &str) -> Result<crate::con
         output_path: output_path.to_string(),
     };
     crate::control::protocol::write_frame_sync(&mut writer, &request)?;
-    let response: crate::control::protocol::Response =
-        crate::control::protocol::read_frame_sync(&mut reader)?;
+    let response: crate::control::protocol::Response = crate::control::protocol::read_frame_sync(&mut reader)?;
 
     Ok(response)
 }
@@ -178,8 +181,7 @@ pub fn shutdown_vm(control_socket: &str) -> Result<()> {
 
     let request = crate::control::protocol::Request::Shutdown;
     crate::control::protocol::write_frame_sync(&mut writer, &request)?;
-    let _response: crate::control::protocol::Response =
-        crate::control::protocol::read_frame_sync(&mut reader)?;
+    let _response: crate::control::protocol::Response = crate::control::protocol::read_frame_sync(&mut reader)?;
 
     Ok(())
 }
@@ -197,16 +199,12 @@ pub fn query_vm_status(control_socket: &str) -> Result<crate::control::protocol:
     let mut writer = BufWriter::new(&stream);
     let mut reader = BufReader::new(&stream);
 
-    let request = crate::control::protocol::Request::VmStatus {
-        vm_id: String::new(),
-    };
+    let request = crate::control::protocol::Request::VmStatus { vm_id: String::new() };
     crate::control::protocol::write_frame_sync(&mut writer, &request)?;
-    let response: crate::control::protocol::Response =
-        crate::control::protocol::read_frame_sync(&mut reader)?;
+    let response: crate::control::protocol::Response = crate::control::protocol::read_frame_sync(&mut reader)?;
 
     Ok(response)
 }
-
 
 /// Run the daemon.
 ///

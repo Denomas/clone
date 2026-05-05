@@ -138,9 +138,7 @@ fn decode_page_batch(payload: &[u8]) -> Result<Vec<(u64, Vec<u8>)>> {
         if offset + 8 + 4096 > payload.len() {
             anyhow::bail!("page batch truncated");
         }
-        let page_offset = u64::from_le_bytes(
-            payload[offset..offset + 8].try_into().unwrap(),
-        );
+        let page_offset = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
         let data = payload[offset + 8..offset + 8 + 4096].to_vec();
         pages.push((page_offset, data));
         offset += 8 + 4096;
@@ -155,9 +153,7 @@ fn decode_page_batch(payload: &[u8]) -> Result<Vec<(u64, Vec<u8>)>> {
 fn is_zero_page(data: &[u8]) -> bool {
     // Check in 8-byte chunks for speed
     let (prefix, aligned, suffix) = unsafe { data.align_to::<u64>() };
-    prefix.iter().all(|&b| b == 0)
-        && aligned.iter().all(|&w| w == 0)
-        && suffix.iter().all(|&b| b == 0)
+    prefix.iter().all(|&b| b == 0) && aligned.iter().all(|&w| w == 0) && suffix.iter().all(|&b| b == 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -165,23 +161,18 @@ fn is_zero_page(data: &[u8]) -> bool {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-pub fn run_sender(
-    vm: &crate::control::sync_server::VmHandle,
-    config: MigrationSenderConfig,
-) -> Result<MigrationStats> {
+pub fn run_sender(vm: &crate::control::sync_server::VmHandle, config: MigrationSenderConfig) -> Result<MigrationStats> {
     use crate::memory::overcommit::DirtyPageTracker;
 
     let start = Instant::now();
     let mut total_pages_sent: u64 = 0;
 
-    let vm_fd = vm.vm_fd.as_ref()
-        .context("VM fd not available for migration")?;
+    let vm_fd = vm.vm_fd.as_ref().context("VM fd not available for migration")?;
 
     // Connect to receiver
     let addr = format!("{}:{}", config.dest_host, config.dest_port);
     tracing::info!("Connecting to migration receiver at {addr}");
-    let mut stream = TcpStream::connect(&addr)
-        .with_context(|| format!("Failed to connect to receiver at {addr}"))?;
+    let mut stream = TcpStream::connect(&addr).with_context(|| format!("Failed to connect to receiver at {addr}"))?;
 
     // Set TCP_NODELAY for lower latency on small messages
     stream.set_nodelay(true)?;
@@ -201,8 +192,12 @@ pub fn run_sender(
     };
     let hello_json = serde_json::to_vec(&hello)?;
     write_msg(&mut stream, MSG_HELLO, &hello_json)?;
-    tracing::info!("Sent Hello: {}MB, {} vCPUs, {} devices",
-        vm.mem_size >> 20, vm.num_vcpus, num_devices);
+    tracing::info!(
+        "Sent Hello: {}MB, {} vCPUs, {} devices",
+        vm.mem_size >> 20,
+        vm.num_vcpus,
+        num_devices
+    );
 
     // 2. Wait for Ready
     let (msg_type, _) = read_msg(&mut stream)?;
@@ -219,16 +214,17 @@ pub fn run_sender(
 
     // 4. Send full memory (VM continues running)
     let total_pages = vm.mem_size / PAGE_SIZE;
-    tracing::info!("Sending initial memory: {} pages ({} MB)",
-        total_pages, vm.mem_size >> 20);
+    tracing::info!(
+        "Sending initial memory: {} pages ({} MB)",
+        total_pages,
+        vm.mem_size >> 20
+    );
 
     let mut batch: Vec<(u64, &[u8])> = Vec::with_capacity(BATCH_SIZE);
 
     for page_idx in 0..total_pages {
         let offset = page_idx * PAGE_SIZE;
-        let page_data = unsafe {
-            std::slice::from_raw_parts(vm.guest_memory.add(offset as usize), PAGE_SIZE as usize)
-        };
+        let page_data = unsafe { std::slice::from_raw_parts(vm.guest_memory.add(offset as usize), PAGE_SIZE as usize) };
 
         // Skip zero pages (receiver memory is already zeroed)
         if is_zero_page(page_data) {
@@ -293,12 +289,8 @@ pub fn run_sender(
             let bit_idx = (page_idx % 8) as u8;
             if byte_idx < bitmap.len() && (bitmap[byte_idx] & (1 << bit_idx)) != 0 {
                 let offset = page_idx * PAGE_SIZE;
-                let page_data = unsafe {
-                    std::slice::from_raw_parts(
-                        vm.guest_memory.add(offset as usize),
-                        PAGE_SIZE as usize,
-                    )
-                };
+                let page_data =
+                    unsafe { std::slice::from_raw_parts(vm.guest_memory.add(offset as usize), PAGE_SIZE as usize) };
                 round_batch.push((offset, page_data));
 
                 if round_batch.len() >= BATCH_SIZE {
@@ -338,12 +330,8 @@ pub fn run_sender(
         let bit_idx = (page_idx % 8) as u8;
         if byte_idx < bitmap.len() && (bitmap[byte_idx] & (1 << bit_idx)) != 0 {
             let offset = page_idx * PAGE_SIZE;
-            let page_data = unsafe {
-                std::slice::from_raw_parts(
-                    vm.guest_memory.add(offset as usize),
-                    PAGE_SIZE as usize,
-                )
-            };
+            let page_data =
+                unsafe { std::slice::from_raw_parts(vm.guest_memory.add(offset as usize), PAGE_SIZE as usize) };
             final_batch.push((offset, page_data));
             final_dirty += 1;
 
@@ -366,12 +354,16 @@ pub fn run_sender(
     // 7. Send vCPU states
     let vcpu_states: Vec<VcpuState> = {
         let states = vm.pause_state.captured_states.lock().unwrap();
-        states.iter().enumerate().map(|(i, s)| {
-            s.clone().unwrap_or_else(|| {
-                tracing::error!("vCPU {i} state not captured");
-                VcpuState::empty()
+        states
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                s.clone().unwrap_or_else(|| {
+                    tracing::error!("vCPU {i} state not captured");
+                    VcpuState::empty()
+                })
             })
-        }).collect()
+            .collect()
     };
 
     for (i, state) in vcpu_states.iter().enumerate() {
@@ -388,7 +380,8 @@ pub fn run_sender(
     let device_states = {
         let bus = vm.mmio_bus.lock().unwrap();
         let transport_states = bus.snapshot_all();
-        let transports: Vec<Vec<u8>> = transport_states.iter()
+        let transports: Vec<Vec<u8>> = transport_states
+            .iter()
             .map(|s| serde_json::to_vec(s).unwrap_or_default())
             .collect();
         DeviceStates {
@@ -424,7 +417,10 @@ pub fn run_sender(
 
     tracing::info!(
         "Migration complete: {} pages sent, {} rounds, {}ms downtime, {}ms total",
-        stats.total_pages_sent, stats.rounds, stats.downtime_ms, stats.total_time_ms
+        stats.total_pages_sent,
+        stats.rounds,
+        stats.downtime_ms,
+        stats.total_time_ms
     );
 
     // Shut down source VM
@@ -433,7 +429,9 @@ pub fn run_sender(
     // Resume vCPUs so they can exit
     crate::control::sync_server::resume_vcpus_pub(vm);
     for &tid in &vm.vcpu_threads {
-        unsafe { libc::pthread_kill(tid, libc::SIGUSR1); }
+        unsafe {
+            libc::pthread_kill(tid, libc::SIGUSR1);
+        }
     }
 
     Ok(stats)
@@ -444,19 +442,12 @@ pub fn run_sender(
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-pub fn run_receiver(
-    port: u16,
-    kernel_path: &str,
-    mem_mb: u32,
-) -> Result<()> {
+pub fn run_receiver(port: u16, _kernel_path: &str, _mem_mb: u32) -> Result<()> {
     use std::net::TcpListener;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    use kvm_bindings::{
-        kvm_pit_config, kvm_userspace_memory_region,
-        KVM_MEM_LOG_DIRTY_PAGES, KVM_PIT_SPEAKER_DUMMY,
-    };
+    use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, KVM_MEM_LOG_DIRTY_PAGES, KVM_PIT_SPEAKER_DUMMY};
     use kvm_ioctls::Kvm;
 
     let listener = TcpListener::bind(format!("0.0.0.0:{port}"))
@@ -475,7 +466,9 @@ pub fn run_receiver(
     let hello: HelloMsg = serde_json::from_slice(&payload)?;
     eprintln!(
         "Migration Hello: {}MB, {} vCPUs, {} devices",
-        hello.mem_size >> 20, hello.num_vcpus, hello.num_devices
+        hello.mem_size >> 20,
+        hello.num_vcpus,
+        hello.num_devices
     );
 
     // 2. Pre-allocate guest memory and KVM VM
@@ -485,8 +478,7 @@ pub fn run_receiver(
     let mem_size = hello.mem_size;
     let guard_size: u64 = 128 << 20;
     let alloc_size = mem_size + guard_size;
-    let guest_memory = crate::memory::create_guest_memory(alloc_size)
-        .context("Failed to allocate guest memory")?;
+    let guest_memory = crate::memory::create_guest_memory(alloc_size).context("Failed to allocate guest memory")?;
 
     let mem_region = kvm_userspace_memory_region {
         slot: 0,
@@ -496,7 +488,8 @@ pub fn run_receiver(
         flags: KVM_MEM_LOG_DIRTY_PAGES,
     };
     unsafe {
-        vm_fd.set_user_memory_region(mem_region)
+        vm_fd
+            .set_user_memory_region(mem_region)
             .context("Failed to set KVM memory region")?;
     }
 
@@ -574,8 +567,12 @@ pub fn run_receiver(
         bus.register(Box::new(balloon));
 
         match crate::virtio::vsock::VirtioVsock::new(3) {
-            Ok(vsock) => { bus.register(Box::new(vsock)); }
-            Err(e) => { tracing::warn!("Failed to create vsock: {e}"); }
+            Ok(vsock) => {
+                bus.register(Box::new(vsock));
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create vsock: {e}");
+            }
         }
 
         bus.set_guest_memory(guest_memory.as_ptr(), mem_size);
@@ -642,25 +639,29 @@ pub fn run_receiver(
 
     // Control socket
     let shutdown_flag = Arc::new(AtomicBool::new(false));
-    let _agent_state = crate::vmm::agent_listener::start_listener(Arc::clone(&shutdown_flag), crate::vmm::agent_listener::AGENT_VSOCK_PORT_BASE);
+    let _agent_state = crate::vmm::agent_listener::start_listener(
+        Arc::clone(&shutdown_flag),
+        crate::vmm::agent_listener::AGENT_VSOCK_PORT_BASE,
+    );
 
     let mut vcpu_threads: Vec<libc::pthread_t> = Vec::new();
     let mut ap_handles = Vec::new();
 
-    let mut all_vcpus: Vec<crate::vmm::vcpu::Vcpu> = vcpus.drain(..).collect();
+    let mut all_vcpus: Vec<crate::vmm::vcpu::Vcpu> = std::mem::take(&mut vcpus);
 
     for vcpu in all_vcpus.drain(1..) {
-        let (tx, rx) = std::sync::mpsc::channel::<libc::pthread_t>();
+        use crate::compat::SendPthreadT;
+        let (tx, rx) = std::sync::mpsc::channel::<SendPthreadT>();
         let handle = std::thread::Builder::new()
             .name(format!("vcpu-{}", vcpu.id()))
             .spawn(move || {
-                let _ = tx.send(unsafe { libc::pthread_self() });
+                let _ = tx.send(SendPthreadT(unsafe { libc::pthread_self() }));
                 let mut vcpu = vcpu;
                 if let Err(e) = vcpu.run_loop() {
                     tracing::error!("vCPU {} exited with error: {e}", vcpu.id());
                 }
             })?;
-        if let Ok(tid) = rx.recv() {
+        if let Ok(SendPthreadT(tid)) = rx.recv() {
             vcpu_threads.push(tid);
         }
         ap_handles.push(handle);
@@ -736,7 +737,11 @@ fn decode_vcpu_state(payload: &[u8]) -> Result<VcpuState> {
     }
     let sregs = payload[offset..offset + sregs_len].to_vec();
 
-    Ok(VcpuState { regs, sregs, ..VcpuState::empty() })
+    Ok(VcpuState {
+        regs,
+        sregs,
+        ..VcpuState::empty()
+    })
 }
 
 #[cfg(test)]
@@ -757,10 +762,7 @@ mod tests {
     fn test_page_batch_roundtrip() {
         let page1 = vec![0xAA; 4096];
         let page2 = vec![0xBB; 4096];
-        let pages: Vec<(u64, &[u8])> = vec![
-            (0x1000, &page1),
-            (0x5000, &page2),
-        ];
+        let pages: Vec<(u64, &[u8])> = vec![(0x1000, &page1), (0x5000, &page2)];
         let encoded = encode_page_batch(&pages);
         let decoded = decode_page_batch(&encoded).unwrap();
         assert_eq!(decoded.len(), 2);

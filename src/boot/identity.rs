@@ -87,8 +87,7 @@ impl VmIdentity {
         let b = &self.vm_id;
         format!(
             "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-            b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
         )
     }
 
@@ -144,8 +143,7 @@ pub fn generate_identity() -> Result<VmIdentity> {
     // Read random bytes for UUID, MAC, entropy seed, and CID
     // Total: 16 (uuid) + 5 (mac random bytes) + 32 (entropy) + 8 (cid randomness) = 61 bytes
     let mut random_bytes = [0u8; 61];
-    let mut urandom = std::fs::File::open("/dev/urandom")
-        .context("Failed to open /dev/urandom")?;
+    let mut urandom = std::fs::File::open("/dev/urandom").context("Failed to open /dev/urandom")?;
     urandom
         .read_exact(&mut random_bytes)
         .context("Failed to read from /dev/urandom")?;
@@ -173,10 +171,7 @@ pub fn generate_identity() -> Result<VmIdentity> {
     vsock_cid = (vsock_cid % (u32::MAX as u64 - 3)) + 3;
 
     // Hostname derived from first 4 bytes of UUID
-    let hostname = format!(
-        "clone-{:02x}{:02x}{:02x}{:02x}",
-        vm_id[0], vm_id[1], vm_id[2], vm_id[3],
-    );
+    let hostname = format!("clone-{:02x}{:02x}{:02x}{:02x}", vm_id[0], vm_id[1], vm_id[2], vm_id[3],);
 
     let identity = VmIdentity {
         vm_id,
@@ -232,8 +227,7 @@ mod tests {
     fn test_identity_page_layout() {
         let identity = VmIdentity {
             vm_id: [
-                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x47, 0x08, 0x89, 0x0A, 0x0B, 0x0C, 0x0D,
-                0x0E, 0x0F, 0x10,
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x47, 0x08, 0x89, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
             ],
             hostname: "test-vm".to_string(),
             vsock_cid: 42,
@@ -331,11 +325,7 @@ mod tests {
         for _ in 0..10 {
             let id = generate_identity().unwrap();
             assert!(id.vsock_cid >= 3, "CID {} is below 3", id.vsock_cid);
-            assert!(
-                id.vsock_cid < u32::MAX as u64,
-                "CID {} exceeds u32::MAX",
-                id.vsock_cid
-            );
+            assert!(id.vsock_cid < u32::MAX as u64, "CID {} exceeds u32::MAX", id.vsock_cid);
         }
     }
 
@@ -393,8 +383,7 @@ mod tests {
     fn test_vm_id_string_format() {
         let identity = VmIdentity {
             vm_id: [
-                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x47, 0x08,
-                0x89, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x47, 0x08, 0x89, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
             ],
             hostname: "test".to_string(),
             vsock_cid: 3,

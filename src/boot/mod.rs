@@ -43,14 +43,9 @@ pub fn load_kernel_with_pci(
     // Load kernel via mmap + MADV_SEQUENTIAL|WILLNEED for async readahead.
     // Pages fault in while we set up ACPI/page tables in parallel, saving ~50ms
     // vs synchronous read() for a ~14MB kernel.
-    let kernel_data = mmap_kernel(kernel_path)
-        .with_context(|| format!("Failed to mmap kernel: {kernel_path}"))?;
+    let kernel_data = mmap_kernel(kernel_path).with_context(|| format!("Failed to mmap kernel: {kernel_path}"))?;
 
-    tracing::info!(
-        "Loading kernel: {} ({} bytes)",
-        kernel_path,
-        kernel_data.len()
-    );
+    tracing::info!("Loading kernel: {} ({} bytes)", kernel_path, kernel_data.len());
 
     // Write kernel command line to guest memory
     let cmdline_bytes = cmdline.as_bytes();
@@ -104,7 +99,7 @@ const E820_RESERVED: u32 = 2;
 
 /// Boot params offsets (struct boot_params from Linux arch/x86/include/uapi/asm/bootparam.h).
 const BP_E820_ENTRIES: u64 = 0x1E8; // offset of e820_entries count (u8)
-const BP_E820_TABLE: u64 = 0x2D0;   // offset of e820_table array
+const BP_E820_TABLE: u64 = 0x2D0; // offset of e820_table array
 const BP_HEAP_END_PTR: u64 = 0x224; // heap_end_ptr
 const BP_CMD_LINE_PTR: u64 = 0x228; // cmd_line_ptr
 
@@ -116,7 +111,10 @@ fn load_bzimage(mem: &GuestMem, data: &[u8], _cmdline: &str, ram_size: u64) -> R
     let kernel_offset = setup_size;
 
     if kernel_offset >= data.len() {
-        anyhow::bail!("Invalid bzImage: setup_size ({setup_size}) >= file size ({})", data.len());
+        anyhow::bail!(
+            "Invalid bzImage: setup_size ({setup_size}) >= file size ({})",
+            data.len()
+        );
     }
 
     // Zero the boot_params area first, then copy setup header into it.
@@ -130,10 +128,7 @@ fn load_bzimage(mem: &GuestMem, data: &[u8], _cmdline: &str, ram_size: u64) -> R
     let header_start = 0x1F1usize;
     let header_end = setup_size.min(data.len()).min(4096);
     if header_end > header_start {
-        mem.write_at(
-            BOOT_PARAMS_ADDR + header_start as u64,
-            &data[header_start..header_end],
-        )?;
+        mem.write_at(BOOT_PARAMS_ADDR + header_start as u64, &data[header_start..header_end])?;
     }
 
     // Patch boot_params with our cmdline pointer
@@ -164,31 +159,67 @@ fn load_bzimage(mem: &GuestMem, data: &[u8], _cmdline: &str, ram_size: u64) -> R
     let mut e820: Vec<E820Entry> = Vec::with_capacity(9);
 
     // Usable RAM below 640K
-    e820.push(E820Entry { addr: 0, size: 0x9FC00, type_: E820_RAM });
+    e820.push(E820Entry {
+        addr: 0,
+        size: 0x9FC00,
+        type_: E820_RAM,
+    });
     // Reserved: EBDA
-    e820.push(E820Entry { addr: 0x9FC00, size: 0x400, type_: E820_RESERVED });
+    e820.push(E820Entry {
+        addr: 0x9FC00,
+        size: 0x400,
+        type_: E820_RESERVED,
+    });
     // Reserved: BIOS ROM
-    e820.push(E820Entry { addr: 0xF0000, size: 0x10000, type_: E820_RESERVED });
+    e820.push(E820Entry {
+        addr: 0xF0000,
+        size: 0x10000,
+        type_: E820_RESERVED,
+    });
 
     if ram_size <= mmio_hole_start {
         // Small VM: single RAM region
         let reserved_top: u64 = 0x20000;
         let ram_end = ram_size - reserved_top;
-        e820.push(E820Entry { addr: 0x100000, size: ram_end - 0x100000, type_: E820_RAM });
-        e820.push(E820Entry { addr: ram_end, size: reserved_top, type_: E820_RESERVED });
+        e820.push(E820Entry {
+            addr: 0x100000,
+            size: ram_end - 0x100000,
+            type_: E820_RAM,
+        });
+        e820.push(E820Entry {
+            addr: ram_end,
+            size: reserved_top,
+            type_: E820_RESERVED,
+        });
     } else {
         // Large VM: split RAM around the MMIO hole
         // Region below hole: 1MB to 3GB
-        e820.push(E820Entry { addr: 0x100000, size: mmio_hole_start - 0x100000, type_: E820_RAM });
+        e820.push(E820Entry {
+            addr: 0x100000,
+            size: mmio_hole_start - 0x100000,
+            type_: E820_RAM,
+        });
         // Region above hole: 4GB to 4GB + overflow
         let above_hole = ram_size - mmio_hole_start;
-        e820.push(E820Entry { addr: mmio_hole_end, size: above_hole, type_: E820_RAM });
+        e820.push(E820Entry {
+            addr: mmio_hole_end,
+            size: above_hole,
+            type_: E820_RAM,
+        });
     }
 
     // Reserved: IOAPIC/LAPIC MMIO
-    e820.push(E820Entry { addr: 0xFEFFC000, size: 0x4000, type_: E820_RESERVED });
+    e820.push(E820Entry {
+        addr: 0xFEFFC000,
+        size: 0x4000,
+        type_: E820_RESERVED,
+    });
     // Reserved: High BIOS ROM
-    e820.push(E820Entry { addr: 0xFFFC0000, size: 0x40000, type_: E820_RESERVED });
+    e820.push(E820Entry {
+        addr: 0xFFFC0000,
+        size: 0x40000,
+        type_: E820_RESERVED,
+    });
 
     let e820_entries = &e820;
 
@@ -261,28 +292,17 @@ fn load_elf(mem: &GuestMem, data: &[u8]) -> Result<GuestAddress> {
 fn mmap_kernel(path: &str) -> Result<Vec<u8>> {
     use std::os::unix::io::AsRawFd;
 
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("Failed to open kernel: {path}"))?;
+    let file = std::fs::File::open(path).with_context(|| format!("Failed to open kernel: {path}"))?;
     let len = file.metadata()?.len() as usize;
     if len == 0 {
         anyhow::bail!("Kernel file is empty: {path}");
     }
 
     let fd = file.as_raw_fd();
-    let ptr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            len,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE,
-            fd,
-            0,
-        )
-    };
+    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, fd, 0) };
     if ptr == libc::MAP_FAILED {
         // Fall back to regular read
-        return std::fs::read(path)
-            .with_context(|| format!("Failed to read kernel: {path}"));
+        return std::fs::read(path).with_context(|| format!("Failed to read kernel: {path}"));
     }
 
     // Advise sequential access + willneed — triggers async readahead
@@ -303,16 +323,11 @@ fn mmap_kernel(path: &str) -> Result<Vec<u8>> {
 
 /// Load initrd into guest memory at a high address.
 fn load_initrd(mem: &GuestMem, path: &str) -> Result<()> {
-    let initrd_data = std::fs::read(path)
-        .with_context(|| format!("Failed to read initrd: {path}"))?;
+    let initrd_data = std::fs::read(path).with_context(|| format!("Failed to read initrd: {path}"))?;
 
     // Place initrd at a high address below the MMIO hole (or below memory top for small VMs).
     // For large VMs with a hole, place it below 3GB to keep it in the first memory slot.
-    let initrd_top = if mem.has_hole() {
-        mem.hole_start()
-    } else {
-        mem.size()
-    };
+    let initrd_top = if mem.has_hole() { mem.hole_start() } else { mem.size() };
     let initrd_addr = initrd_top - initrd_data.len() as u64;
     let initrd_addr = initrd_addr & !0xFFF; // page-align down
 

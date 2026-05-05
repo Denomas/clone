@@ -1,20 +1,35 @@
 #[cfg(target_os = "linux")]
-mod vmm;
-#[cfg(target_os = "linux")]
-mod memory;
-#[cfg(target_os = "linux")]
+#[allow(dead_code)]
 mod boot;
 #[cfg(target_os = "linux")]
+mod compat;
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod memory;
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
 mod migration;
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 mod pci;
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod vmm;
 
-mod virtio;
-mod net;
-mod storage;
+#[allow(dead_code)]
 mod control;
+#[allow(dead_code)]
+mod net;
+#[allow(dead_code)]
 mod rootfs;
+#[allow(dead_code)]
 mod rootfs_create;
+
+// Platform-agnostic modules (unit tests run on all platforms)
+#[allow(dead_code)]
+mod storage;
+#[allow(dead_code)]
+mod virtio;
 
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
@@ -366,6 +381,7 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    #[allow(unused_variables)]
     match cli.command {
         Commands::Run {
             kernel,
@@ -391,16 +407,15 @@ fn main() -> Result<()> {
             {
                 // Verify kernel against manifest if provided
                 if let Some(ref manifest_path) = kernel_manifest {
-                    let manifest = boot::measured::load_trusted_hashes(manifest_path)
-                        .context("Failed to load kernel manifest")?;
+                    let manifest =
+                        boot::measured::load_trusted_hashes(manifest_path).context("Failed to load kernel manifest")?;
                     let kernel_name = std::path::Path::new(&kernel)
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| kernel.clone());
                     let verifier = boot::measured::verifier_for_kernel(&manifest, &kernel_name)
                         .context("Kernel not found in manifest")?;
-                    verifier.verify_kernel(&kernel)
-                        .context("Kernel verification failed")?;
+                    verifier.verify_kernel(&kernel).context("Kernel verification failed")?;
                     eprintln!("Kernel verified: {kernel}");
                 }
 
@@ -456,10 +471,7 @@ fn main() -> Result<()> {
                     let initrd_bytes = rootfs::generate_initrd(&init_binary)?;
 
                     // Write generated initrd to a temp file
-                    let initrd_path = std::env::temp_dir().join(format!(
-                        "clone-initrd-{}.img",
-                        std::process::id()
-                    ));
+                    let initrd_path = std::env::temp_dir().join(format!("clone-initrd-{}.img", std::process::id()));
                     std::fs::write(&initrd_path, &initrd_bytes)?;
                     effective_initrd = Some(initrd_path.to_string_lossy().to_string());
 
@@ -490,9 +502,7 @@ fn main() -> Result<()> {
                 // Handle --net (auto-setup) vs --tap (manual)
                 let (effective_tap, pre_opened_tap_fd) = if net {
                     match net::auto_setup_network(std::process::id()) {
-                        Ok((tap_name, tap_fd, _guest_ip)) => {
-                            (Some(tap_name), Some(tap_fd))
-                        }
+                        Ok((tap_name, tap_fd, _guest_ip)) => (Some(tap_name), Some(tap_fd)),
                         Err(e) => {
                             tracing::warn!("Auto network setup failed: {e}");
                             (None, None)
@@ -505,7 +515,10 @@ fn main() -> Result<()> {
                 tracing::info!("Booting VM: kernel={kernel}, mem={mem_mb}MB, vcpus={vcpus}");
                 // If passthrough devices are present, remove pci=off from cmdline
                 if !passthrough.is_empty() {
-                    cmdline = cmdline.replace(" pci=off", "").replace("pci=off ", "").replace("pci=off", "");
+                    cmdline = cmdline
+                        .replace(" pci=off", "")
+                        .replace("pci=off ", "")
+                        .replace("pci=off", "");
                 }
 
                 let config = vmm::VmConfig {
@@ -532,10 +545,7 @@ fn main() -> Result<()> {
                 // Clean up temp initrd
                 if let Some(ref rootfs_image) = rootfs {
                     let _ = rootfs_image; // suppress unused warning
-                    let initrd_path = std::env::temp_dir().join(format!(
-                        "clone-initrd-{}.img",
-                        std::process::id()
-                    ));
+                    let initrd_path = std::env::temp_dir().join(format!("clone-initrd-{}.img", std::process::id()));
                     let _ = std::fs::remove_file(initrd_path);
                 }
             }
@@ -571,7 +581,15 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Migrate { vm_id, to, remote_path, shutdown_after, dry_run, live, port } => {
+        Commands::Migrate {
+            vm_id,
+            to,
+            remote_path,
+            shutdown_after,
+            dry_run,
+            live,
+            port,
+        } => {
             let pid = resolve_vm_pid(vm_id)?;
             let socket_path = format!("/tmp/clone-{pid}.sock");
 
@@ -579,7 +597,7 @@ fn main() -> Result<()> {
             if live {
                 // Extract hostname from user@host format
                 let host = if to.contains('@') {
-                    to.split('@').last().unwrap_or(&to).to_string()
+                    to.split('@').next_back().unwrap_or(&to).to_string()
                 } else {
                     to.clone()
                 };
@@ -612,9 +630,7 @@ fn main() -> Result<()> {
                 .args([&to, "clone --version"])
                 .output()?;
             if !preflight.status.success() {
-                anyhow::bail!(
-                    "Pre-flight failed: clone not found on {to}. Install clone on the remote host first."
-                );
+                anyhow::bail!("Pre-flight failed: clone not found on {to}. Install clone on the remote host first.");
             }
             let remote_version = String::from_utf8_lossy(&preflight.stdout);
             eprintln!("Remote clone: {}", remote_version.trim());
@@ -624,10 +640,7 @@ fn main() -> Result<()> {
                 .args([&to, &format!("test -w $(dirname {remote_template})")])
                 .status()?;
             if !write_check.success() {
-                anyhow::bail!(
-                    "Pre-flight failed: no write access to {} on {to}",
-                    remote_template
-                );
+                anyhow::bail!("Pre-flight failed: no write access to {} on {to}", remote_template);
             }
             eprintln!("Pre-flight passed.");
 
@@ -651,7 +664,9 @@ fn main() -> Result<()> {
             eprintln!("Step 2/3: Transferring to {to}:{remote_template}...");
             let rsync_status = std::process::Command::new("rsync")
                 .args([
-                    "-a", "--compress", "--progress",
+                    "-a",
+                    "--compress",
+                    "--progress",
                     &format!("{local_template}/"),
                     &format!("{to}:{remote_template}/"),
                 ])
@@ -710,7 +725,20 @@ fn main() -> Result<()> {
 
             eprintln!("Migration complete: VM running on {to}");
         }
-        Commands::Fork { template, skip_verify, shared_dir, net, tap, block, seccomp, jail, cid, mem_mb, vcpus, overlay_size } => {
+        Commands::Fork {
+            template,
+            skip_verify,
+            shared_dir,
+            net,
+            tap,
+            block,
+            seccomp,
+            jail,
+            cid,
+            mem_mb,
+            vcpus,
+            overlay_size,
+        } => {
             #[cfg(target_os = "linux")]
             {
                 // Handle --net (auto-setup) vs --tap (manual)
@@ -784,7 +812,21 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(control::daemon::run_daemon(&socket))?;
         }
-        Commands::Create { socket, kernel, mem_mb, vcpus, initrd, rootfs, overlay, shared_dir, block, net, tap, seccomp, jail } => {
+        Commands::Create {
+            socket,
+            kernel,
+            mem_mb,
+            vcpus,
+            initrd,
+            rootfs,
+            overlay,
+            shared_dir,
+            block,
+            net,
+            tap,
+            seccomp,
+            jail,
+        } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
                 let client = control::ControlClient::new(&socket);
@@ -848,16 +890,19 @@ fn main() -> Result<()> {
                                 if let Ok(pid) = pid_str.parse::<u32>() {
                                     let sock_path = format!("/tmp/clone-{pid}.sock");
                                     // Try to query status
-                                    let request = control::protocol::Request::VmStatus {
-                                        vm_id: pid.to_string(),
-                                    };
+                                    let request = control::protocol::Request::VmStatus { vm_id: pid.to_string() };
                                     match send_control_request(&sock_path, &request) {
-                                        Ok(control::protocol::Response::Ok { body }) => {
-                                            if let control::protocol::ResponseBody::Status { state, pid: vm_pid, vcpus } = body {
-                                                // Try to read RSS from /proc/{pid}/status
-                                                let rss_mb = read_vm_rss(vm_pid);
-                                                found.push((vm_pid, state, vcpus, rss_mb, sock_path));
-                                            }
+                                        Ok(control::protocol::Response::Ok {
+                                            body:
+                                                control::protocol::ResponseBody::Status {
+                                                    state,
+                                                    pid: vm_pid,
+                                                    vcpus,
+                                                },
+                                        }) => {
+                                            // Try to read RSS from /proc/{pid}/status
+                                            let rss_mb = read_vm_rss(vm_pid);
+                                            found.push((vm_pid, state, vcpus, rss_mb, sock_path));
                                         }
                                         _ => {
                                             // Socket exists but not responding, skip
@@ -872,7 +917,7 @@ fn main() -> Result<()> {
                 if found.is_empty() {
                     eprintln!("No VMs running.");
                 } else {
-                    println!("{:<10} {:<10} {:<8} {:<10} {}", "PID", "STATE", "VCPUS", "RSS_MB", "SOCKET");
+                    println!("{:<10} {:<10} {:<8} {:<10} SOCKET", "PID", "STATE", "VCPUS", "RSS_MB");
                     for (pid, state, vcpus, rss_mb, socket_path) in &found {
                         println!("{:<10} {:<10} {:<8} {:<10} {}", pid, state, vcpus, rss_mb, socket_path);
                     }
@@ -932,7 +977,9 @@ fn main() -> Result<()> {
                     }
                 }
                 #[cfg(not(unix))]
-                { None::<()> }
+                {
+                    None::<()>
+                }
             };
 
             // Bidirectional bridge: stdin -> socket, socket -> stdout
@@ -992,15 +1039,17 @@ fn main() -> Result<()> {
                 (command[0].clone(), command[1..].to_vec())
             };
 
-            let request = control::protocol::Request::Exec {
-                command: cmd,
-                args,
-            };
+            let request = control::protocol::Request::Exec { command: cmd, args };
 
             let response = send_control_request(&socket_path, &request)?;
             match response {
                 control::protocol::Response::Ok { body } => {
-                    if let control::protocol::ResponseBody::ExecResult { exit_code, stdout, stderr } = body {
+                    if let control::protocol::ResponseBody::ExecResult {
+                        exit_code,
+                        stdout,
+                        stderr,
+                    } = body
+                    {
                         if !stdout.is_empty() {
                             print!("{stdout}");
                         }
@@ -1060,9 +1109,7 @@ fn main() -> Result<()> {
                 } else if let Some(image) = from_docker {
                     rootfs_create::RootfsSource::FromDocker(image)
                 } else {
-                    anyhow::bail!(
-                        "Specify one of: --distro, --from-dir, or --from-docker"
-                    );
+                    anyhow::bail!("Specify one of: --distro, --from-dir, or --from-docker");
                 };
                 rootfs_create::create_rootfs(&source, &size, &output)?;
             }
@@ -1101,9 +1148,7 @@ fn resolve_vm_pid(vm_id: Option<u32>) -> Result<u32> {
     match pids.len() {
         0 => anyhow::bail!("No running Clone instances found. Use --vm-id to specify a PID."),
         1 => Ok(pids[0]),
-        n => anyhow::bail!(
-            "Found {n} running Clone instances ({pids:?}). Use --vm-id to specify which one."
-        ),
+        n => anyhow::bail!("Found {n} running Clone instances ({pids:?}). Use --vm-id to specify which one."),
     }
 }
 
@@ -1148,4 +1193,3 @@ fn send_control_request(
 
     Ok(response)
 }
-

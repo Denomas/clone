@@ -90,7 +90,7 @@ impl Qcow2Header {
             .context("seeking to start of QCOW2 file")?;
 
         let mut buf = [0u8; 104]; // v3 header size
-        // Read at least v2 header bytes.
+                                  // Read at least v2 header bytes.
         file.read_exact(&mut buf[..72])
             .context("reading QCOW2 header (first 72 bytes)")?;
 
@@ -300,8 +300,8 @@ impl Qcow2File {
             .open(path)
             .with_context(|| format!("opening QCOW2 file {}", path.display()))?;
 
-        let header = Qcow2Header::read_from(&mut file)
-            .with_context(|| format!("parsing QCOW2 header in {}", path.display()))?;
+        let header =
+            Qcow2Header::read_from(&mut file).with_context(|| format!("parsing QCOW2 header in {}", path.display()))?;
 
         tracing::info!(
             path = %path.display(),
@@ -313,14 +313,13 @@ impl Qcow2File {
         );
 
         // Read L1 table.
-        let l1_table = Self::read_table(&mut file, header.l1_table_offset, header.l1_size as usize)
-            .context("reading L1 table")?;
+        let l1_table =
+            Self::read_table(&mut file, header.l1_table_offset, header.l1_size as usize).context("reading L1 table")?;
 
         // Read refcount table.
         let rc_entries = (header.refcount_table_clusters as u64 * header.cluster_size()) / 8;
-        let refcount_table =
-            Self::read_table(&mut file, header.refcount_table_offset, rc_entries as usize)
-                .context("reading refcount table")?;
+        let refcount_table = Self::read_table(&mut file, header.refcount_table_offset, rc_entries as usize)
+            .context("reading refcount table")?;
 
         // Determine next allocation offset: end of the file, rounded up to cluster boundary.
         let file_len = file.seek(SeekFrom::End(0))?;
@@ -360,12 +359,7 @@ impl Qcow2File {
     /// - `virtual_size`: virtual disk size in bytes.
     /// - `cluster_bits`: log2 of cluster size (typically 16 for 64 KB).
     /// - `backing_file`: optional path to a backing file.
-    pub fn create(
-        path: &Path,
-        virtual_size: u64,
-        cluster_bits: u32,
-        backing_file: Option<&Path>,
-    ) -> Result<Self> {
+    pub fn create(path: &Path, virtual_size: u64, cluster_bits: u32, backing_file: Option<&Path>) -> Result<Self> {
         ensure!(
             (9..=21).contains(&cluster_bits),
             "cluster_bits {cluster_bits} out of valid range 9..21"
@@ -433,8 +427,7 @@ impl Qcow2File {
         };
 
         // Create the file.
-        let mut file = File::create(path)
-            .with_context(|| format!("creating QCOW2 file {}", path.display()))?;
+        let mut file = File::create(path).with_context(|| format!("creating QCOW2 file {}", path.display()))?;
 
         // Write backing file path into cluster 0 if specified.
         if let Some(backing_path) = backing_file {
@@ -503,9 +496,7 @@ impl Qcow2File {
     ///
     /// Unallocated regions return zeros (or data from the backing file if present).
     pub fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        let end = offset
-            .checked_add(buf.len() as u64)
-            .context("read offset overflow")?;
+        let end = offset.checked_add(buf.len() as u64).context("read offset overflow")?;
         ensure!(
             end <= self.header.size,
             "read past end of virtual disk: offset={offset} len={} size={}",
@@ -559,9 +550,7 @@ impl Qcow2File {
     ///
     /// Allocates new clusters as needed (copy-on-write).
     pub fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<()> {
-        let end = offset
-            .checked_add(data.len() as u64)
-            .context("write offset overflow")?;
+        let end = offset.checked_add(data.len() as u64).context("write offset overflow")?;
         ensure!(
             end <= self.header.size,
             "write past end of virtual disk: offset={offset} len={} size={}",
@@ -739,12 +728,7 @@ impl Qcow2File {
     }
 
     /// Get an L2 entry, loading the L2 table into the cache if necessary.
-    fn get_l2_entry(
-        &mut self,
-        l1_index: u32,
-        l2_table_offset: u64,
-        l2_index: usize,
-    ) -> Result<u64> {
+    fn get_l2_entry(&mut self, l1_index: u32, l2_table_offset: u64, l2_index: usize) -> Result<u64> {
         self.ensure_l2_cached(l1_index, l2_table_offset)?;
         let entry = self.l2_cache.get(&l1_index).unwrap();
         Ok(entry.entries[l2_index])
@@ -809,9 +793,7 @@ impl Qcow2File {
         // Read L2 table from disk.
         let n_entries = self.header.l2_entries_per_table() as usize;
         let entries = Self::read_table(&mut self.file, l2_table_offset, n_entries)
-            .with_context(|| {
-                format!("reading L2 table at offset {l2_table_offset} (L1 index {l1_index})")
-            })?;
+            .with_context(|| format!("reading L2 table at offset {l2_table_offset} (L1 index {l1_index})"))?;
 
         self.access_counter += 1;
         self.l2_cache.insert(
@@ -829,11 +811,7 @@ impl Qcow2File {
 
     /// Evict the least-recently-used L2 cache entry.
     fn evict_l2_entry(&mut self) -> Result<()> {
-        let victim = self
-            .l2_cache
-            .iter()
-            .min_by_key(|(_, e)| e.last_access)
-            .map(|(k, _)| *k);
+        let victim = self.l2_cache.iter().min_by_key(|(_, e)| e.last_access).map(|(k, _)| *k);
 
         if let Some(idx) = victim {
             // Flush if dirty.
@@ -943,9 +921,7 @@ impl Qcow2File {
     #[allow(dead_code)]
     pub fn refcount_increment(&mut self, cluster_offset: u64) -> Result<u16> {
         let current = self.get_refcount(cluster_offset)?;
-        let new_rc = current
-            .checked_add(1)
-            .context("refcount overflow")?;
+        let new_rc = current.checked_add(1).context("refcount overflow")?;
         self.set_refcount(cluster_offset, new_rc)?;
         Ok(new_rc)
     }
@@ -954,7 +930,10 @@ impl Qcow2File {
     #[allow(dead_code)]
     pub fn refcount_decrement(&mut self, cluster_offset: u64) -> Result<u16> {
         let current = self.get_refcount(cluster_offset)?;
-        ensure!(current > 0, "cannot decrement refcount below 0 for cluster at offset {cluster_offset}");
+        ensure!(
+            current > 0,
+            "cannot decrement refcount below 0 for cluster at offset {cluster_offset}"
+        );
         let new_rc = current - 1;
         self.set_refcount(cluster_offset, new_rc)?;
         Ok(new_rc)
@@ -981,8 +960,7 @@ impl Qcow2File {
 
     /// Write the L1 table to disk.
     fn write_l1_table(&mut self) -> Result<()> {
-        self.file
-            .seek(SeekFrom::Start(self.header.l1_table_offset))?;
+        self.file.seek(SeekFrom::Start(self.header.l1_table_offset))?;
         for &entry in &self.l1_table {
             self.file.write_all(&entry.to_be_bytes())?;
         }
@@ -1015,8 +993,7 @@ impl Qcow2File {
             self.header.write_to(&mut self.file)?;
         }
 
-        self.file
-            .seek(SeekFrom::Start(self.header.refcount_table_offset))?;
+        self.file.seek(SeekFrom::Start(self.header.refcount_table_offset))?;
         for &entry in &self.refcount_table {
             self.file.write_all(&entry.to_be_bytes())?;
         }
@@ -1051,7 +1028,7 @@ fn align_up(value: u64, align: u64) -> u64 {
 
 /// Integer division, rounding up.
 fn div_round_up(a: u64, b: u64) -> u64 {
-    (a + b - 1) / b
+    a.div_ceil(b)
 }
 
 /// Resolve a backing file path relative to the directory containing the overlay image.
@@ -1060,9 +1037,7 @@ fn resolve_backing_path(overlay_path: &Path, backing_name: &str) -> Result<PathB
     if backing_path.is_absolute() {
         Ok(backing_path.to_path_buf())
     } else {
-        let parent = overlay_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
+        let parent = overlay_path.parent().unwrap_or_else(|| Path::new("."));
         Ok(parent.join(backing_path))
     }
 }
@@ -1070,8 +1045,7 @@ fn resolve_backing_path(overlay_path: &Path, backing_name: &str) -> Result<PathB
 /// Open a backing file, auto-detecting format (QCOW2 or raw).
 fn open_backing_file(path: &Path) -> Result<BackingFile> {
     // Try to detect format by reading magic.
-    let mut f = File::open(path)
-        .with_context(|| format!("opening backing file {}", path.display()))?;
+    let mut f = File::open(path).with_context(|| format!("opening backing file {}", path.display()))?;
     let mut magic = [0u8; 4];
     let is_qcow2 = f.read_exact(&mut magic).is_ok() && magic == *b"QFI\xfb";
     drop(f);
@@ -1095,10 +1069,7 @@ mod tests {
     use super::*;
 
     /// Helper: create a QCOW2 image in a temp directory and return (Qcow2File, tempdir).
-    fn create_test_image(
-        virtual_size: u64,
-        cluster_bits: u32,
-    ) -> (Qcow2File, tempfile::TempDir) {
+    fn create_test_image(virtual_size: u64, cluster_bits: u32) -> (Qcow2File, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.qcow2");
         let q = Qcow2File::create(&path, virtual_size, cluster_bits, None).unwrap();
@@ -1209,9 +1180,7 @@ mod tests {
         let (mut q, _dir) = create_test_image(virtual_size, cluster_bits);
 
         // Write a large block spanning many clusters.
-        let data: Vec<u8> = (0..cluster_size as usize * 10)
-            .map(|i| (i % 256) as u8)
-            .collect();
+        let data: Vec<u8> = (0..cluster_size as usize * 10).map(|i| (i % 256) as u8).collect();
         q.write_at(0, &data).unwrap();
 
         let mut buf = vec![0u8; data.len()];
@@ -1312,13 +1281,7 @@ mod tests {
         let overlay_path = dir.path().join("overlay.qcow2");
         let cluster_bits = 12u32;
         let virtual_size = 8192u64;
-        let mut q = Qcow2File::create(
-            &overlay_path,
-            virtual_size,
-            cluster_bits,
-            Some(&backing_path),
-        )
-        .unwrap();
+        let mut q = Qcow2File::create(&overlay_path, virtual_size, cluster_bits, Some(&backing_path)).unwrap();
 
         // Reading unallocated clusters should return backing file data.
         let mut buf = vec![0u8; 100];
@@ -1355,13 +1318,7 @@ mod tests {
 
         // Create overlay referencing base.
         let overlay_path = dir.path().join("overlay.qcow2");
-        let mut overlay = Qcow2File::create(
-            &overlay_path,
-            virtual_size,
-            cluster_bits,
-            Some(&base_path),
-        )
-        .unwrap();
+        let mut overlay = Qcow2File::create(&overlay_path, virtual_size, cluster_bits, Some(&base_path)).unwrap();
 
         // Read unallocated from overlay → should get base data.
         let mut buf = vec![0u8; 16];

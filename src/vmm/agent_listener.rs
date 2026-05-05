@@ -9,7 +9,7 @@
 //! channel receiver, eliminating the 2.5s sleep + drain race.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 /// The guest agent connects to the same port via kernel cmdline param.
 pub const AGENT_VSOCK_PORT_BASE: u32 = 9999;
 
-fn default_mem_available() -> f64 { 100.0 }
+fn default_mem_available() -> f64 {
+    100.0
+}
 
 /// AF_VSOCK address family.
 const AF_VSOCK: libc::c_int = 40;
@@ -57,10 +59,7 @@ pub enum VmmMessage {
     Poll,
     Pong { ping_id: u64 },
     Shutdown,
-    Exec {
-        command: String,
-        args: Vec<String>,
-    },
+    Exec { command: String, args: Vec<String> },
 }
 
 /// Shared state between the listener thread and the balloon tick thread.
@@ -106,10 +105,12 @@ impl AgentState {
     /// Returns (exit_code, stdout, stderr) on success.
     pub fn send_exec(&self, command: &str, args: &[String]) -> Result<(i32, String, String), String> {
         // Serialize concurrent exec calls — only one can use the vsock channel at a time.
-        let _exec_guard = self.exec_lock.lock()
-            .map_err(|_| "Exec lock poisoned".to_string())?;
+        let _exec_guard = self.exec_lock.lock().map_err(|_| "Exec lock poisoned".to_string())?;
 
-        let fd = self.client_fd.lock().unwrap()
+        let fd = self
+            .client_fd
+            .lock()
+            .unwrap()
             .ok_or_else(|| "Guest agent not connected".to_string())?;
 
         // Signal the listener to stop processing heartbeats
@@ -126,19 +127,21 @@ impl AgentState {
         }
 
         // Send exec command
-        send_vmm_message(fd, &VmmMessage::Exec {
-            command: command.to_string(),
-            args: args.to_vec(),
-        }).map_err(|_| "Failed to send exec command to agent".to_string())?;
+        send_vmm_message(
+            fd,
+            &VmmMessage::Exec {
+                command: command.to_string(),
+                args: args.to_vec(),
+            },
+        )
+        .map_err(|_| "Failed to send exec command to agent".to_string())?;
 
         // Take the receiver out of the mutex so we don't hold the lock during exec.
         // This allows the agent listener to replace the channel on disconnect/reconnect.
-        let rx = self.msg_rx.lock().unwrap()
-            .take()
-            .ok_or_else(|| {
-                self.exec_in_progress.store(false, Ordering::Release);
-                "Channel not available".to_string()
-            })?;
+        let rx = self.msg_rx.lock().unwrap().take().ok_or_else(|| {
+            self.exec_in_progress.store(false, Ordering::Release);
+            "Channel not available".to_string()
+        })?;
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
@@ -149,7 +152,11 @@ impl AgentState {
             }
 
             match rx.recv_timeout(timeout) {
-                Ok(AgentMessage::ExecResult { exit_code, stdout, stderr }) => {
+                Ok(AgentMessage::ExecResult {
+                    exit_code,
+                    stdout,
+                    stderr,
+                }) => {
                     self.exec_in_progress.store(false, Ordering::Release);
                     *self.msg_rx.lock().unwrap() = Some(rx);
                     return Ok((exit_code, stdout, stderr));
@@ -251,11 +258,8 @@ fn listener_thread_fd(state: Arc<AgentState>, shutdown: Arc<AtomicBool>, fd: i32
             let mut msg_buf = vec![0u8; len];
             if read_exact(fd, &mut msg_buf) {
                 if let Ok(msg) = serde_json::from_slice::<AgentMessage>(&msg_buf) {
-                    match &msg {
-                        AgentMessage::Ready => {
-                            tracing::info!("agent-listener: guest agent ready");
-                        }
-                        _ => {}
+                    if let AgentMessage::Ready = &msg {
+                        tracing::info!("agent-listener: guest agent ready");
                     }
                     let _ = tx.try_send(msg);
                 }
@@ -339,9 +343,7 @@ fn listener_thread(state: Arc<AgentState>, shutdown: Arc<AtomicBool>, port: u32)
 
     // Accept loop — handle one connection at a time (one agent per VM)
     while !shutdown.load(Ordering::Relaxed) {
-        let client_fd = unsafe {
-            libc::accept(listen_fd, std::ptr::null_mut(), std::ptr::null_mut())
-        };
+        let client_fd = unsafe { libc::accept(listen_fd, std::ptr::null_mut(), std::ptr::null_mut()) };
         if client_fd < 0 {
             continue; // timeout or error, retry
         }
@@ -415,7 +417,16 @@ fn handle_client(state: &AgentState, fd: i32, shutdown: &AtomicBool, tx: &mpsc::
         match serde_json::from_slice::<AgentMessage>(&body) {
             Ok(msg) => {
                 // Update activity state for heartbeats (always, even during exec)
-                if let AgentMessage::Heartbeat { active, load_avg_1m, mem_pressure_pct, mem_available_pct, process_count, uptime_secs, ping_id } = &msg {
+                if let AgentMessage::Heartbeat {
+                    active,
+                    load_avg_1m,
+                    mem_pressure_pct,
+                    mem_available_pct,
+                    process_count,
+                    uptime_secs,
+                    ping_id,
+                } = &msg
+                {
                     state.active.store(*active, Ordering::Release);
                     *state.mem_available_pct.lock().unwrap() = *mem_available_pct;
                     // Send pong back so agent knows we're alive
@@ -452,24 +463,25 @@ fn handle_client(state: &AgentState, fd: i32, shutdown: &AtomicBool, tx: &mpsc::
     }
 }
 
-enum ReadResult { Ok, Timeout, Disconnected }
+enum ReadResult {
+    Ok,
+    Timeout,
+    Disconnected,
+}
 
 fn read_exact_result(fd: i32, buf: &mut [u8]) -> ReadResult {
     let mut read = 0;
     while read < buf.len() {
-        let n = unsafe {
-            libc::recv(
-                fd,
-                buf[read..].as_mut_ptr() as *mut libc::c_void,
-                buf.len() - read,
-                0,
-            )
-        };
+        let n = unsafe { libc::recv(fd, buf[read..].as_mut_ptr() as *mut libc::c_void, buf.len() - read, 0) };
         if n <= 0 {
-            if n == 0 { return ReadResult::Disconnected; }
+            if n == 0 {
+                return ReadResult::Disconnected;
+            }
             let errno = unsafe { *libc::__errno_location() };
             if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
-                if read == 0 { return ReadResult::Timeout; }
+                if read == 0 {
+                    return ReadResult::Timeout;
+                }
                 continue; // partial read, keep trying
             }
             return ReadResult::Disconnected;
@@ -491,9 +503,7 @@ fn send_vmm_message(fd: i32, msg: &VmmMessage) -> Result<(), ()> {
     buf.extend_from_slice(&len);
     buf.extend_from_slice(&json);
 
-    let written = unsafe {
-        libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len())
-    };
+    let written = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
 
     if written as usize == buf.len() {
         Ok(())

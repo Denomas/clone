@@ -48,17 +48,24 @@ pub struct VcpuState {
 impl VcpuState {
     pub fn empty() -> Self {
         Self {
-            regs: Vec::new(), sregs: Vec::new(), lapic: Vec::new(),
-            fpu: Vec::new(), xsave: Vec::new(), xcrs: Vec::new(),
-            mp_state: Vec::new(), vcpu_events: Vec::new(),
-            debug_regs: Vec::new(), msrs: Vec::new(), tsc_khz: 0,
+            regs: Vec::new(),
+            sregs: Vec::new(),
+            lapic: Vec::new(),
+            fpu: Vec::new(),
+            xsave: Vec::new(),
+            xcrs: Vec::new(),
+            mp_state: Vec::new(),
+            vcpu_events: Vec::new(),
+            debug_regs: Vec::new(),
+            msrs: Vec::new(),
+            tsc_khz: 0,
             cpuid: Vec::new(),
         }
     }
 }
 
 /// Serialized device state for template restoration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeviceStates {
     /// Serial port state (if any).
     pub serial: Option<Vec<u8>>,
@@ -73,18 +80,6 @@ pub struct DeviceStates {
     /// In-kernel PIT state.
     #[serde(default)]
     pub pit: Vec<u8>,
-}
-
-impl Default for DeviceStates {
-    fn default() -> Self {
-        Self {
-            serial: None,
-            virtio_configs: HashMap::new(),
-            transports: Vec::new(),
-            irqchip: Vec::new(),
-            pit: Vec::new(),
-        }
-    }
 }
 
 /// A template snapshot capturing a VM's full state for CoW forking.
@@ -128,22 +123,24 @@ impl TemplateSnapshot {
 
         // Verify the memory file exists
         if !snapshot.memory_file.exists() {
-            anyhow::bail!(
-                "Template memory file not found: {}",
-                snapshot.memory_file.display()
-            );
+            anyhow::bail!("Template memory file not found: {}", snapshot.memory_file.display());
         }
 
         // Verify memory file integrity
         if verify {
-            let mem_data = std::fs::read(&snapshot.memory_file)
-                .with_context(|| format!("Failed to read template memory for verification: {}", snapshot.memory_file.display()))?;
+            let mem_data = std::fs::read(&snapshot.memory_file).with_context(|| {
+                format!(
+                    "Failed to read template memory for verification: {}",
+                    snapshot.memory_file.display()
+                )
+            })?;
             let actual_hash = crate::boot::measured::compute_sha256(&mem_data);
             let actual_hex: String = actual_hash.iter().map(|b| format!("{b:02x}")).collect();
             if actual_hex != snapshot.memory_hash {
                 anyhow::bail!(
                     "Template integrity check failed: expected {}, got {}",
-                    snapshot.memory_hash, actual_hex
+                    snapshot.memory_hash,
+                    actual_hex
                 );
             }
             tracing::info!("Template integrity verified (SHA-256 matches)");
@@ -165,8 +162,7 @@ impl TemplateSnapshot {
             .with_context(|| format!("Failed to create template dir: {template_dir}"))?;
 
         let meta_path = Path::new(template_dir).join(TEMPLATE_METADATA_FILE);
-        let json = serde_json::to_string_pretty(self)
-            .context("Failed to serialize template metadata")?;
+        let json = serde_json::to_string_pretty(self).context("Failed to serialize template metadata")?;
         std::fs::write(&meta_path, json)
             .with_context(|| format!("Failed to write template metadata: {}", meta_path.display()))?;
 
@@ -197,8 +193,7 @@ pub fn save_template(
     let memory_size = guest_mem.size();
     let mem_file_path = Path::new(output_dir).join("memory.raw");
 
-    std::fs::create_dir_all(output_dir)
-        .with_context(|| format!("Failed to create output dir: {output_dir}"))?;
+    std::fs::create_dir_all(output_dir).with_context(|| format!("Failed to create output dir: {output_dir}"))?;
 
     // Dump raw guest memory to file
     let mem_data = guest_mem.read_at(0, memory_size as usize)?;
@@ -245,12 +240,8 @@ pub fn save_template(
 pub fn fork_from_template(template: &TemplateSnapshot) -> Result<crate::memory::GuestMem> {
     use std::os::unix::io::AsRawFd;
 
-    let mem_file = std::fs::File::open(&template.memory_file).with_context(|| {
-        format!(
-            "Failed to open template memory: {}",
-            template.memory_file.display()
-        )
-    })?;
+    let mem_file = std::fs::File::open(&template.memory_file)
+        .with_context(|| format!("Failed to open template memory: {}", template.memory_file.display()))?;
 
     let fd = mem_file.as_raw_fd();
     let size = template.memory_size as usize;
@@ -294,7 +285,10 @@ pub fn fork_from_template(template: &TemplateSnapshot) -> Result<crate::memory::
     let mmio_hole_end: u64 = 0x1_0000_0000; // 4 GB
     if template.memory_size > mmio_hole_start {
         Ok(crate::memory::GuestMem::from_raw_with_hole(
-            ptr as *mut u8, template.memory_size, mmio_hole_start, mmio_hole_end,
+            ptr as *mut u8,
+            template.memory_size,
+            mmio_hole_start,
+            mmio_hole_end,
         ))
     } else {
         Ok(crate::memory::GuestMem::from_raw(ptr as *mut u8, template.memory_size))
@@ -326,12 +320,10 @@ const INCREMENTAL_METADATA_FILE: &str = "incremental.json";
 impl IncrementalSnapshot {
     /// Save incremental snapshot metadata.
     pub fn save_metadata(&self, output_dir: &str) -> Result<()> {
-        std::fs::create_dir_all(output_dir)
-            .with_context(|| format!("Failed to create output dir: {output_dir}"))?;
+        std::fs::create_dir_all(output_dir).with_context(|| format!("Failed to create output dir: {output_dir}"))?;
 
         let meta_path = Path::new(output_dir).join(INCREMENTAL_METADATA_FILE);
-        let json = serde_json::to_string_pretty(self)
-            .context("Failed to serialize incremental snapshot metadata")?;
+        let json = serde_json::to_string_pretty(self).context("Failed to serialize incremental snapshot metadata")?;
         std::fs::write(&meta_path, json)
             .with_context(|| format!("Failed to write metadata: {}", meta_path.display()))?;
 
@@ -344,8 +336,8 @@ impl IncrementalSnapshot {
         let meta_path = Path::new(snapshot_dir).join(INCREMENTAL_METADATA_FILE);
         let meta_data = std::fs::read_to_string(&meta_path)
             .with_context(|| format!("Failed to read incremental metadata: {}", meta_path.display()))?;
-        let snapshot: IncrementalSnapshot = serde_json::from_str(&meta_data)
-            .context("Failed to parse incremental snapshot metadata")?;
+        let snapshot: IncrementalSnapshot =
+            serde_json::from_str(&meta_data).context("Failed to parse incremental snapshot metadata")?;
         Ok(snapshot)
     }
 }
@@ -372,8 +364,7 @@ pub fn save_incremental(
 
     let (bitmap, dirty_data) = tracker.collect_dirty_pages(vm_fd, guest_mem.as_ptr() as *const u8, mem_size)?;
 
-    std::fs::create_dir_all(output_dir)
-        .with_context(|| format!("Failed to create output dir: {output_dir}"))?;
+    std::fs::create_dir_all(output_dir).with_context(|| format!("Failed to create output dir: {output_dir}"))?;
 
     let dirty_file = Path::new(output_dir).join("dirty_pages.raw");
     std::fs::write(&dirty_file, &dirty_data)
@@ -428,12 +419,8 @@ impl TemplatePool {
     pub fn get_or_load(&mut self, runtime_type: &str) -> Result<&TemplateSnapshot> {
         if !self.templates.contains_key(runtime_type) {
             let template_dir = self.base_dir.join(runtime_type);
-            let template = TemplateSnapshot::load(
-                template_dir
-                    .to_str()
-                    .context("Invalid template directory path")?,
-                true,
-            )?;
+            let template =
+                TemplateSnapshot::load(template_dir.to_str().context("Invalid template directory path")?, true)?;
             self.templates.insert(runtime_type.to_string(), template);
         }
         Ok(self.templates.get(runtime_type).unwrap())

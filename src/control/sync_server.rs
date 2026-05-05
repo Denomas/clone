@@ -66,8 +66,7 @@ pub fn start_control_socket(vm_handle: Arc<VmHandle>) -> Result<String> {
     // Remove stale socket
     let _ = std::fs::remove_file(&path);
 
-    let listener = UnixListener::bind(&path)
-        .with_context(|| format!("Failed to bind control socket: {path}"))?;
+    let listener = UnixListener::bind(&path).with_context(|| format!("Failed to bind control socket: {path}"))?;
 
     // Set a timeout so the accept loop can check for shutdown
     listener.set_nonblocking(false)?;
@@ -88,10 +87,7 @@ pub fn start_control_socket(vm_handle: Arc<VmHandle>) -> Result<String> {
 
                 // Use a short timeout via SO_RCVTIMEO for the accept
                 unsafe {
-                    let tv = libc::timeval {
-                        tv_sec: 1,
-                        tv_usec: 0,
-                    };
+                    let tv = libc::timeval { tv_sec: 1, tv_usec: 0 };
                     libc::setsockopt(
                         std::os::unix::io::AsRawFd::as_raw_fd(&listener),
                         libc::SOL_SOCKET,
@@ -109,9 +105,7 @@ pub fn start_control_socket(vm_handle: Arc<VmHandle>) -> Result<String> {
                     }
                     Err(e) => {
                         // Timeout or interrupted — just loop and check shutdown
-                        if e.kind() != std::io::ErrorKind::WouldBlock
-                            && e.kind() != std::io::ErrorKind::TimedOut
-                        {
+                        if e.kind() != std::io::ErrorKind::WouldBlock && e.kind() != std::io::ErrorKind::TimedOut {
                             // On Linux, SO_RCVTIMEO on accept returns EAGAIN
                             if e.raw_os_error() != Some(libc::EAGAIN) {
                                 tracing::error!("Control socket accept error: {e}");
@@ -130,10 +124,7 @@ pub fn start_control_socket(vm_handle: Arc<VmHandle>) -> Result<String> {
     Ok(path)
 }
 
-fn handle_connection(
-    stream: std::os::unix::net::UnixStream,
-    vm_handle: &VmHandle,
-) -> Result<()> {
+fn handle_connection(stream: std::os::unix::net::UnixStream, vm_handle: &VmHandle) -> Result<()> {
     use std::io::{BufReader, BufWriter};
 
     let mut reader = BufReader::new(&stream);
@@ -160,9 +151,10 @@ fn handle_connection(
 fn dispatch(req: Request, vm: &VmHandle) -> Response {
     match req {
         Request::Snapshot { output_path, .. } => handle_snapshot(vm, &output_path),
-        Request::IncrementalSnapshot { output_path, base_template } => {
-            handle_incremental_snapshot(vm, &output_path, &base_template)
-        }
+        Request::IncrementalSnapshot {
+            output_path,
+            base_template,
+        } => handle_incremental_snapshot(vm, &output_path, &base_template),
         Request::Pause => handle_pause(vm),
         Request::Resume => handle_resume(vm),
         Request::Shutdown => handle_shutdown(vm),
@@ -178,24 +170,22 @@ fn dispatch(req: Request, vm: &VmHandle) -> Response {
                 vcpus: vm.num_vcpus,
             },
         },
-        Request::Exec { command, args } => {
-            match &vm.agent_state {
-                Some(agent_state) => {
-                    match agent_state.send_exec(&command, &args) {
-                        Ok((exit_code, stdout, stderr)) => Response::Ok {
-                            body: ResponseBody::ExecResult { exit_code, stdout, stderr },
-                        },
-                        Err(msg) => Response::Error { message: msg },
-                    }
-                }
-                None => Response::Error {
-                    message: "Guest agent not available".to_string(),
+        Request::Exec { command, args } => match &vm.agent_state {
+            Some(agent_state) => match agent_state.send_exec(&command, &args) {
+                Ok((exit_code, stdout, stderr)) => Response::Ok {
+                    body: ResponseBody::ExecResult {
+                        exit_code,
+                        stdout,
+                        stderr,
+                    },
                 },
-            }
-        }
-        Request::SetBalloon { target_mb } => {
-            handle_set_balloon(vm, target_mb)
-        }
+                Err(msg) => Response::Error { message: msg },
+            },
+            None => Response::Error {
+                message: "Guest agent not available".to_string(),
+            },
+        },
+        Request::SetBalloon { target_mb } => handle_set_balloon(vm, target_mb),
         _ => Response::Error {
             message: "Unsupported command on per-VM control socket".to_string(),
         },
@@ -234,11 +224,15 @@ fn pause_vcpus(vm: &VmHandle) -> Result<(), String> {
 
     // Kick each vCPU out of KVM_RUN (send twice to handle races)
     for &tid in &vm.vcpu_threads {
-        unsafe { libc::pthread_kill(tid, libc::SIGUSR1); }
+        unsafe {
+            libc::pthread_kill(tid, libc::SIGUSR1);
+        }
     }
     std::thread::sleep(std::time::Duration::from_millis(50));
     for &tid in &vm.vcpu_threads {
-        unsafe { libc::pthread_kill(tid, libc::SIGUSR1); }
+        unsafe {
+            libc::pthread_kill(tid, libc::SIGUSR1);
+        }
     }
 
     // Wait for all vCPUs to park
@@ -283,9 +277,7 @@ fn handle_set_balloon(vm: &VmHandle, target_mb: u32) -> Response {
     let mut bus = vm.mmio_bus.lock().unwrap();
     // Balloon is device index 0 (registered first in both boot and fork paths).
     if let Some(transport) = bus.transport_mut(0) {
-        if let Some(balloon) = transport.device_mut().as_any_mut()
-            .downcast_mut::<VirtioBalloon>()
-        {
+        if let Some(balloon) = transport.device_mut().as_any_mut().downcast_mut::<VirtioBalloon>() {
             // Calculate pages to reclaim: template_mb - target_mb
             let template_mb = (vm.mem_size / (1024 * 1024)) as u32;
             let reclaim_pages = if target_mb < template_mb {
@@ -295,7 +287,9 @@ fn handle_set_balloon(vm: &VmHandle, target_mb: u32) -> Response {
             };
             balloon.update_target(reclaim_pages);
         } else {
-            return Response::Error { message: "balloon device not found".to_string() };
+            return Response::Error {
+                message: "balloon device not found".to_string(),
+            };
         }
         // Raise config-change interrupt so the guest driver sees the new target.
         transport.raise_config_change_interrupt();
@@ -306,9 +300,13 @@ fn handle_set_balloon(vm: &VmHandle, target_mb: u32) -> Response {
             let _ = vm_fd.set_irq_line(irq, false);
         }
         tracing::info!(target_mb, "balloon target set via control socket");
-        return Response::Ok { body: ResponseBody::Ack {} };
+        return Response::Ok {
+            body: ResponseBody::Ack {},
+        };
     }
-    Response::Error { message: "balloon device not found".to_string() }
+    Response::Error {
+        message: "balloon device not found".to_string(),
+    }
 }
 
 fn handle_pause(vm: &VmHandle) -> Response {
@@ -397,7 +395,8 @@ fn handle_incremental_snapshot(vm: &VmHandle, output_path: &str, base_template: 
     let device_states = {
         let bus = vm.mmio_bus.lock().unwrap();
         let transport_states = bus.snapshot_all();
-        let transports: Vec<Vec<u8>> = transport_states.iter()
+        let transports: Vec<Vec<u8>> = transport_states
+            .iter()
             .map(|s| serde_json::to_vec(s).unwrap_or_default())
             .collect();
         DeviceStates {
@@ -411,9 +410,7 @@ fn handle_incremental_snapshot(vm: &VmHandle, output_path: &str, base_template: 
 
     // 4. Save incremental snapshot (only dirty pages)
     let result = {
-        let guest_mem = unsafe {
-            crate::memory::GuestMem::borrow_raw(vm.guest_memory, vm.mem_size)
-        };
+        let guest_mem = unsafe { crate::memory::GuestMem::borrow_raw(vm.guest_memory, vm.mem_size) };
         crate::boot::template::save_incremental(
             &guest_mem,
             vm_fd,
@@ -469,7 +466,8 @@ fn handle_snapshot(vm: &VmHandle, output_path: &str) -> Response {
     let device_states = {
         let bus = vm.mmio_bus.lock().unwrap();
         let transport_states = bus.snapshot_all();
-        let transports: Vec<Vec<u8>> = transport_states.iter()
+        let transports: Vec<Vec<u8>> = transport_states
+            .iter()
             .map(|s| serde_json::to_vec(s).unwrap_or_default())
             .collect();
 
@@ -477,17 +475,20 @@ fn handle_snapshot(vm: &VmHandle, output_path: &str) -> Response {
         let mut irqchip_states = Vec::new();
         let mut pit_bytes = Vec::new();
         if let Some(ref vm_fd) = vm.vm_fd {
-            use kvm_bindings::{KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE, KVM_IRQCHIP_IOAPIC, kvm_irqchip};
+            use kvm_bindings::{kvm_irqchip, KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE};
             for chip_id in [KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE, KVM_IRQCHIP_IOAPIC] {
-                let mut chip = kvm_irqchip::default();
-                chip.chip_id = chip_id;
+                let mut chip = kvm_irqchip {
+                    chip_id,
+                    ..Default::default()
+                };
                 match vm_fd.get_irqchip(&mut chip) {
                     Ok(()) => {
                         let bytes = unsafe {
                             std::slice::from_raw_parts(
                                 &chip as *const kvm_irqchip as *const u8,
                                 std::mem::size_of::<kvm_irqchip>(),
-                            ).to_vec()
+                            )
+                            .to_vec()
                         };
                         irqchip_states.push(bytes);
                     }
@@ -500,7 +501,8 @@ fn handle_snapshot(vm: &VmHandle, output_path: &str) -> Response {
                         std::slice::from_raw_parts(
                             &pit_state as *const kvm_bindings::kvm_pit_state2 as *const u8,
                             std::mem::size_of::<kvm_bindings::kvm_pit_state2>(),
-                        ).to_vec()
+                        )
+                        .to_vec()
                     };
                 }
                 Err(e) => tracing::warn!("Failed to save PIT state: {e}"),
@@ -517,15 +519,15 @@ fn handle_snapshot(vm: &VmHandle, output_path: &str) -> Response {
     };
 
     // 3. Save kvmclock and template
-    let clock_ns = vm.vm_fd.as_ref()
+    let clock_ns = vm
+        .vm_fd
+        .as_ref()
         .and_then(|fd| fd.get_clock().ok())
         .map(|c| c.clock)
         .unwrap_or(0);
 
     let result = {
-        let guest_mem = unsafe {
-            crate::memory::GuestMem::borrow_raw(vm.guest_memory, vm.mem_size)
-        };
+        let guest_mem = unsafe { crate::memory::GuestMem::borrow_raw(vm.guest_memory, vm.mem_size) };
         crate::boot::template::save_template(
             &guest_mem,
             vcpu_states,

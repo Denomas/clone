@@ -389,9 +389,9 @@ struct InodeMap {
 }
 
 impl InodeMap {
-    fn new(root_dir: &PathBuf) -> Self {
+    fn new(root_dir: &std::path::Path) -> Self {
         let mut inodes = HashMap::new();
-        inodes.insert(FUSE_ROOT_ID, root_dir.clone());
+        inodes.insert(FUSE_ROOT_ID, root_dir.to_path_buf());
         Self {
             next_inode: 2,
             next_fh: 1,
@@ -445,7 +445,7 @@ impl InodeMap {
         }
     }
 
-    fn rename_path(&mut self, old_path: &PathBuf, new_path: &PathBuf) {
+    fn rename_path(&mut self, old_path: &std::path::Path, new_path: &std::path::Path) {
         let mut ino_to_update = None;
         for (&ino, path) in &self.inodes {
             if path == old_path {
@@ -454,7 +454,7 @@ impl InodeMap {
             }
         }
         if let Some(ino) = ino_to_update {
-            self.inodes.insert(ino, new_path.clone());
+            self.inodes.insert(ino, new_path.to_path_buf());
         }
     }
 
@@ -532,9 +532,7 @@ impl VirtioFs {
             FUSE_RENAME2 => self.handle_rename2(header, body),
             FUSE_STATFS => self.handle_statfs(header),
             FUSE_FLUSH | FUSE_FSYNC | FUSE_FSYNCDIR | FUSE_SYNCFS => self.handle_flush(header),
-            FUSE_FORGET => {
-                Vec::new()
-            }
+            FUSE_FORGET => Vec::new(),
             FUSE_BATCH_FORGET => {
                 // No response needed for batch forget
                 Vec::new()
@@ -706,8 +704,16 @@ impl VirtioFs {
 
         // Handle chown (lchown so symlinks aren't followed)
         if setattr.valid & (FATTR_UID | FATTR_GID) != 0 {
-            let uid = if setattr.valid & FATTR_UID != 0 { setattr.uid } else { u32::MAX };
-            let gid = if setattr.valid & FATTR_GID != 0 { setattr.gid } else { u32::MAX };
+            let uid = if setattr.valid & FATTR_UID != 0 {
+                setattr.uid
+            } else {
+                u32::MAX
+            };
+            let gid = if setattr.valid & FATTR_GID != 0 {
+                setattr.gid
+            } else {
+                u32::MAX
+            };
             unsafe {
                 let c_path = std::ffi::CString::new(path.to_str().unwrap_or("")).unwrap_or_default();
                 libc::lchown(c_path.as_ptr(), uid, gid);
@@ -954,7 +960,7 @@ impl VirtioFs {
             buf.extend_from_slice(unsafe { as_bytes(&dirent) });
             buf.extend_from_slice(name_bytes);
             let padding = padded_name_len - name_bytes.len();
-            buf.extend(std::iter::repeat(0u8).take(padding));
+            buf.extend(std::iter::repeat_n(0u8, padding));
         }
 
         let hdr_size = std::mem::size_of::<FuseOutHeader>();
@@ -1064,10 +1070,7 @@ impl VirtioFs {
 
         // Create directory with mode
         use std::os::unix::fs::DirBuilderExt;
-        if let Err(e) = std::fs::DirBuilder::new()
-            .mode(mkdir_in.mode)
-            .create(&child_path)
-        {
+        if let Err(e) = std::fs::DirBuilder::new().mode(mkdir_in.mode).create(&child_path) {
             return self.make_error_response(header.unique, -errno_from_io(&e));
         }
 
@@ -1194,14 +1197,21 @@ impl VirtioFs {
                 _padding: 0,
                 _spare: [0; 6],
             };
-            return self.make_response(header.unique, &statfs_out);
+            self.make_response(header.unique, &statfs_out)
         }
         #[cfg(not(target_os = "linux"))]
         {
             let statfs_out = FuseStatfsOut {
-                blocks: 1024 * 1024, bfree: 512 * 1024, bavail: 512 * 1024,
-                files: 1000000, ffree: 999000, bsize: 4096, namelen: 255,
-                frsize: 4096, _padding: 0, _spare: [0; 6],
+                blocks: 1024 * 1024,
+                bfree: 512 * 1024,
+                bavail: 512 * 1024,
+                files: 1000000,
+                ffree: 999000,
+                bsize: 4096,
+                namelen: 255,
+                frsize: 4096,
+                _padding: 0,
+                _spare: [0; 6],
             };
             self.make_response(header.unique, &statfs_out)
         }
@@ -1303,8 +1313,12 @@ impl VirtioFs {
         let mode = mknod_in.mode;
 
         // For regular files (S_IFREG) or mode 0 (default), create with File::create
+        // Cast needed: libc::S_IFMT type differs by platform (u16 macOS, u32 Linux).
+        #[allow(clippy::unnecessary_cast)]
         let file_type = mode & libc::S_IFMT as u32;
-        if file_type == libc::S_IFREG as u32 || file_type == 0 {
+        #[allow(clippy::unnecessary_cast)]
+        let is_regular = file_type == libc::S_IFREG as u32 || file_type == 0;
+        if is_regular {
             use std::os::unix::fs::OpenOptionsExt;
             match std::fs::OpenOptions::new()
                 .write(true)
@@ -1323,9 +1337,7 @@ impl VirtioFs {
                     Ok(c) => c,
                     Err(_) => return self.make_error_response(header.unique, -libc::EINVAL),
                 };
-                let ret = unsafe {
-                    libc::mknod(c_path.as_ptr(), mode as libc::mode_t, mknod_in.rdev as libc::dev_t)
-                };
+                let ret = unsafe { libc::mknod(c_path.as_ptr(), mode as libc::mode_t, mknod_in.rdev as libc::dev_t) };
                 if ret < 0 {
                     return self.make_error_response(header.unique, -errno());
                 }
@@ -1438,14 +1450,7 @@ impl VirtioFs {
 
             if getxattr_in.size == 0 {
                 // Query the size needed
-                let ret = unsafe {
-                    libc::lgetxattr(
-                        c_path.as_ptr(),
-                        c_name.as_ptr(),
-                        std::ptr::null_mut(),
-                        0,
-                    )
-                };
+                let ret = unsafe { libc::lgetxattr(c_path.as_ptr(), c_name.as_ptr(), std::ptr::null_mut(), 0) };
                 if ret < 0 {
                     return self.make_error_response(header.unique, -errno());
                 }
@@ -1566,9 +1571,7 @@ impl VirtioFs {
 
             if getxattr_in.size == 0 {
                 // Query the size needed
-                let ret = unsafe {
-                    libc::llistxattr(c_path.as_ptr(), std::ptr::null_mut(), 0)
-                };
+                let ret = unsafe { libc::llistxattr(c_path.as_ptr(), std::ptr::null_mut(), 0) };
                 if ret < 0 {
                     return self.make_error_response(header.unique, -errno());
                 }
@@ -1580,13 +1583,7 @@ impl VirtioFs {
             }
 
             let mut buf = vec![0u8; getxattr_in.size as usize];
-            let ret = unsafe {
-                libc::llistxattr(
-                    c_path.as_ptr(),
-                    buf.as_mut_ptr() as *mut libc::c_char,
-                    buf.len(),
-                )
-            };
+            let ret = unsafe { libc::llistxattr(c_path.as_ptr(), buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
             if ret < 0 {
                 return self.make_error_response(header.unique, -errno());
             }
@@ -1720,16 +1717,12 @@ impl VirtioFs {
         use std::os::unix::io::AsRawFd;
         let fd = file.as_raw_fd();
 
-        let ret = unsafe {
-            libc::lseek(fd, lseek_in.offset as libc::off_t, lseek_in.whence as i32)
-        };
+        let ret = unsafe { libc::lseek(fd, lseek_in.offset as libc::off_t, lseek_in.whence as i32) };
         if ret < 0 {
             return self.make_error_response(header.unique, -errno());
         }
 
-        let out = FuseLseekOut {
-            offset: ret as u64,
-        };
+        let out = FuseLseekOut { offset: ret as u64 };
         self.make_response(header.unique, &out)
     }
 
@@ -1776,14 +1769,16 @@ impl VirtioFs {
                     Ok(c) => c,
                     Err(_) => return self.make_error_response(header.unique, -libc::EINVAL),
                 };
+                // Use raw syscall for musl compatibility (musl lacks renameat2 wrapper)
                 let ret = unsafe {
-                    libc::renameat2(
+                    libc::syscall(
+                        libc::SYS_renameat2,
                         libc::AT_FDCWD,
                         c_old.as_ptr(),
                         libc::AT_FDCWD,
                         c_new.as_ptr(),
                         flags,
-                    )
+                    ) as i32
                 };
                 if ret < 0 {
                     return self.make_error_response(header.unique, -errno());
@@ -1867,12 +1862,7 @@ impl VirtioDevice for VirtioFs {
         Ok(())
     }
 
-    fn process_descriptor_chain(
-        &mut self,
-        _queue_index: u16,
-        chain: &DescriptorChain,
-        vq: &Virtqueue,
-    ) -> u32 {
+    fn process_descriptor_chain(&mut self, _queue_index: u16, chain: &DescriptorChain, vq: &Virtqueue) -> u32 {
         // Collect all readable data (FUSE request)
         let mut request_data = Vec::new();
         for desc in &chain.descriptors {
@@ -1917,7 +1907,9 @@ impl VirtioDevice for VirtioFs {
         written as u32
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn reset(&mut self) {
         self.activated = false;
     }
@@ -1954,7 +1946,9 @@ fn chown_to_caller(path: &std::path::Path, uid: u32, gid: u32) {
     #[cfg(target_os = "linux")]
     {
         if let Ok(c_path) = std::ffi::CString::new(path.to_str().unwrap_or("")) {
-            unsafe { libc::lchown(c_path.as_ptr(), uid, gid); }
+            unsafe {
+                libc::lchown(c_path.as_ptr(), uid, gid);
+            }
         }
     }
     #[cfg(not(target_os = "linux"))]
@@ -2034,7 +2028,7 @@ mod tests {
         fs.read_config(0, &mut buf);
         assert_eq!(&buf[0..4], b"myfs");
         assert_eq!(buf[4], 0); // null-padded
-        // num_request_queues = 1
+                               // num_request_queues = 1
         let nrq = u32::from_le_bytes([buf[36], buf[37], buf[38], buf[39]]);
         assert_eq!(nrq, 1);
     }
@@ -2129,10 +2123,7 @@ mod tests {
         // Open a real file
         let file_path = root.join("handle_test");
         std::fs::write(&file_path, b"data").unwrap();
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .open(&file_path)
-            .unwrap();
+        let file = std::fs::OpenOptions::new().read(true).open(&file_path).unwrap();
         let fh = map.open_file(file);
         assert!(fh >= 1);
 

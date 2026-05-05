@@ -1,8 +1,7 @@
 pub mod balloon;
 pub mod overcommit;
 
-use anyhow::{Context, Result};
-use vm_memory::{GuestAddress, GuestMemoryMmap, MmapRegion};
+use anyhow::Result;
 
 /// Guest physical memory layout:
 ///
@@ -13,7 +12,6 @@ use vm_memory::{GuestAddress, GuestMemoryMmap, MmapRegion};
 /// 0x0001_0000 - 0x0002_0000  PD page tables (one 4KB PD per GB, up to 64)
 /// 0x0010_0000 - (kernel end) Kernel image (loaded at 1MB)
 /// (kernel end) - mem_size    Free memory for guest use
-
 const GUEST_MEM_START: u64 = 0;
 
 /// Create guest memory backed by anonymous mmap with MAP_NORESERVE.
@@ -34,7 +32,12 @@ pub struct GuestMem {
 impl GuestMem {
     /// Create a GuestMem from a raw pointer and size (no MMIO hole).
     pub fn from_raw(ptr: *mut u8, size: u64) -> Self {
-        Self { ptr, size, hole_start: 0, hole_end: 0 }
+        Self {
+            ptr,
+            size,
+            hole_start: 0,
+            hole_end: 0,
+        }
     }
 
     /// Create a GuestMem with an MMIO hole for large VMs.
@@ -42,17 +45,36 @@ impl GuestMem {
     /// - GPA [0, hole_start) → userspace [ptr, ptr+hole_start)
     /// - GPA [hole_end, ...) → userspace [ptr+hole_start, ...)
     pub fn from_raw_with_hole(ptr: *mut u8, size: u64, hole_start: u64, hole_end: u64) -> Self {
-        Self { ptr, size, hole_start, hole_end }
+        Self {
+            ptr,
+            size,
+            hole_start,
+            hole_end,
+        }
     }
 
     /// Create a temporary borrow of existing guest memory.
     pub unsafe fn borrow_raw(ptr: *mut u8, size: u64) -> BorrowedGuestMem {
-        BorrowedGuestMem { inner: GuestMem { ptr, size, hole_start: 0, hole_end: 0 } }
+        BorrowedGuestMem {
+            inner: GuestMem {
+                ptr,
+                size,
+                hole_start: 0,
+                hole_end: 0,
+            },
+        }
     }
 
     /// Create a temporary borrow with MMIO hole info.
     pub unsafe fn borrow_raw_with_hole(ptr: *mut u8, size: u64, hole_start: u64, hole_end: u64) -> BorrowedGuestMem {
-        BorrowedGuestMem { inner: GuestMem { ptr, size, hole_start, hole_end } }
+        BorrowedGuestMem {
+            inner: GuestMem {
+                ptr,
+                size,
+                hole_start,
+                hole_end,
+            },
+        }
     }
 
     pub fn as_ptr(&self) -> *mut u8 {
@@ -97,7 +119,11 @@ impl GuestMem {
             }
             Ok(offset as usize)
         } else {
-            anyhow::bail!("GPA {gpa:#x} is in the MMIO hole ({:#x}..{:#x})", self.hole_start, self.hole_end);
+            anyhow::bail!(
+                "GPA {gpa:#x} is in the MMIO hole ({:#x}..{:#x})",
+                self.hole_start,
+                self.hole_end
+            );
         }
     }
 
@@ -235,7 +261,7 @@ pub fn setup_page_tables(mem: &GuestMem, mem_size: u64) -> Result<()> {
     let pd_base: u64 = 0x10000; // 64KB — PD tables start here
 
     // How many GB to map (at least 1, capped at 64 to fit below kernel at 0x100000)
-    let num_gb = ((mem_size + (1 << 30) - 1) >> 30).max(1).min(64) as u64;
+    let num_gb = mem_size.div_ceil(1 << 30).clamp(1, 64);
 
     // PML4[0] -> PDPT (present, writable)
     let pml4_entry: u64 = pdpt_addr | 0x3;

@@ -18,8 +18,8 @@ use anyhow::Result;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
-use protocol::{read_frame, write_frame, Request, Response, ResponseBody, VmSummary};
 use metrics::{EventLogger, MetricsCollector, VmEvent, VmMetrics};
+use protocol::{read_frame, write_frame, Request, Response, ResponseBody, VmSummary};
 
 /// Default socket path for the control plane.
 pub const DEFAULT_SOCKET_PATH: &str = "/run/clone/control.sock";
@@ -148,10 +148,7 @@ impl Drop for ControlServer {
     }
 }
 
-async fn handle_connection(
-    stream: UnixStream,
-    state: Arc<Mutex<ServerState>>,
-) -> Result<()> {
+async fn handle_connection(stream: UnixStream, state: Arc<Mutex<ServerState>>) -> Result<()> {
     let (mut reader, mut writer) = stream.into_split();
 
     loop {

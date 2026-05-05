@@ -2,6 +2,7 @@
 name = "clone-agent"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87"
 description = "Clone guest agent — reports activity and memory pressure to VMM"
 
 [dependencies]

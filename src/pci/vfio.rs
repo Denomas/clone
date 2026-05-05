@@ -9,12 +9,13 @@
 //! No external crate dependencies — raw ioctl constants from Linux headers.
 
 use std::fs;
-use std::os::unix::io::{AsRawFd, RawFd};
-use std::path::{Path, PathBuf};
+use std::os::unix::io::RawFd;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use super::MsixState;
+use crate::compat::IoctlReq;
 
 // ---------------------------------------------------------------------------
 // VFIO ioctl constants (from linux/vfio.h)
@@ -139,25 +140,20 @@ impl VfioDevice {
         tracing::info!("VFIO device {bdf}: IOMMU group {iommu_group}");
 
         // 2. Open container
-        let container_fd = open_rw("/dev/vfio/vfio")
-            .context("Failed to open /dev/vfio/vfio")?;
+        let container_fd = open_rw("/dev/vfio/vfio").context("Failed to open /dev/vfio/vfio")?;
 
         // Check API version
-        let version = unsafe { libc::ioctl(container_fd, VFIO_GET_API_VERSION as libc::c_ulong) };
-        if version != VFIO_API_VERSION as i32 {
+        let version = unsafe { libc::ioctl(container_fd, VFIO_GET_API_VERSION as IoctlReq) };
+        if version != VFIO_API_VERSION {
             anyhow::bail!("VFIO API version mismatch: got {version}, expected {VFIO_API_VERSION}");
         }
 
         // Check IOMMU support
-        let has_type1v2 = unsafe {
-            libc::ioctl(container_fd, VFIO_CHECK_EXTENSION as libc::c_ulong, VFIO_TYPE1V2_IOMMU)
-        };
+        let has_type1v2 = unsafe { libc::ioctl(container_fd, VFIO_CHECK_EXTENSION as IoctlReq, VFIO_TYPE1V2_IOMMU) };
         let iommu_type = if has_type1v2 > 0 {
             VFIO_TYPE1V2_IOMMU
         } else {
-            let has_type1 = unsafe {
-                libc::ioctl(container_fd, VFIO_CHECK_EXTENSION as libc::c_ulong, VFIO_TYPE1_IOMMU)
-            };
+            let has_type1 = unsafe { libc::ioctl(container_fd, VFIO_CHECK_EXTENSION as IoctlReq, VFIO_TYPE1_IOMMU) };
             if has_type1 <= 0 {
                 anyhow::bail!("No supported VFIO IOMMU type found");
             }
@@ -166,14 +162,11 @@ impl VfioDevice {
 
         // 3. Open group
         let group_path = format!("/dev/vfio/{iommu_group}");
-        let group_fd = open_rw(&group_path)
-            .with_context(|| format!("Failed to open VFIO group: {group_path}"))?;
+        let group_fd = open_rw(&group_path).with_context(|| format!("Failed to open VFIO group: {group_path}"))?;
 
         // Check group is viable
         let mut status = VfioGroupStatus { argsz: 8, flags: 0 };
-        let ret = unsafe {
-            libc::ioctl(group_fd, VFIO_GROUP_GET_STATUS as libc::c_ulong, &mut status)
-        };
+        let ret = unsafe { libc::ioctl(group_fd, VFIO_GROUP_GET_STATUS as IoctlReq, &mut status) };
         if ret < 0 {
             anyhow::bail!("VFIO_GROUP_GET_STATUS failed: {}", std::io::Error::last_os_error());
         }
@@ -185,26 +178,20 @@ impl VfioDevice {
         }
 
         // 4. Set container for group
-        let ret = unsafe {
-            libc::ioctl(group_fd, VFIO_GROUP_SET_CONTAINER as libc::c_ulong, &container_fd)
-        };
+        let ret = unsafe { libc::ioctl(group_fd, VFIO_GROUP_SET_CONTAINER as IoctlReq, &container_fd) };
         if ret < 0 {
             anyhow::bail!("VFIO_GROUP_SET_CONTAINER failed: {}", std::io::Error::last_os_error());
         }
 
         // 5. Set IOMMU type
-        let ret = unsafe {
-            libc::ioctl(container_fd, VFIO_SET_IOMMU as libc::c_ulong, iommu_type)
-        };
+        let ret = unsafe { libc::ioctl(container_fd, VFIO_SET_IOMMU as IoctlReq, iommu_type) };
         if ret < 0 {
             anyhow::bail!("VFIO_SET_IOMMU failed: {}", std::io::Error::last_os_error());
         }
 
         // 6. Get device fd
         let bdf_cstr = std::ffi::CString::new(bdf)?;
-        let device_fd = unsafe {
-            libc::ioctl(group_fd, VFIO_GROUP_GET_DEVICE_FD as libc::c_ulong, bdf_cstr.as_ptr())
-        };
+        let device_fd = unsafe { libc::ioctl(group_fd, VFIO_GROUP_GET_DEVICE_FD as IoctlReq, bdf_cstr.as_ptr()) };
         if device_fd < 0 {
             anyhow::bail!(
                 "VFIO_GROUP_GET_DEVICE_FD failed for {bdf}: {}",
@@ -219,15 +206,14 @@ impl VfioDevice {
             num_regions: 0,
             num_irqs: 0,
         };
-        let ret = unsafe {
-            libc::ioctl(device_fd, VFIO_DEVICE_GET_INFO as libc::c_ulong, &mut dev_info)
-        };
+        let ret = unsafe { libc::ioctl(device_fd, VFIO_DEVICE_GET_INFO as IoctlReq, &mut dev_info) };
         if ret < 0 {
             anyhow::bail!("VFIO_DEVICE_GET_INFO failed: {}", std::io::Error::last_os_error());
         }
         tracing::info!(
             "VFIO device {bdf}: {} regions, {} IRQs",
-            dev_info.num_regions, dev_info.num_irqs
+            dev_info.num_regions,
+            dev_info.num_irqs
         );
 
         // 8. Query regions
@@ -241,9 +227,7 @@ impl VfioDevice {
                 size: 0,
                 offset: 0,
             };
-            let ret = unsafe {
-                libc::ioctl(device_fd, VFIO_DEVICE_GET_REGION_INFO as libc::c_ulong, &mut region)
-            };
+            let ret = unsafe { libc::ioctl(device_fd, VFIO_DEVICE_GET_REGION_INFO as IoctlReq, &mut region) };
             if ret < 0 {
                 tracing::warn!("Failed to get region {i} info");
                 continue;
@@ -251,7 +235,9 @@ impl VfioDevice {
             if region.size > 0 {
                 tracing::info!(
                     "  Region {i}: size={:#x}, flags={:#x}, offset={:#x}",
-                    region.size, region.flags, region.offset
+                    region.size,
+                    region.flags,
+                    region.offset
                 );
             }
             regions.push(region);
@@ -277,17 +263,16 @@ impl VfioDevice {
             size: mem_size,
         };
 
-        let ret = unsafe {
-            libc::ioctl(self.container_fd, VFIO_IOMMU_MAP_DMA as libc::c_ulong, &dma_map)
-        };
+        let ret = unsafe { libc::ioctl(self.container_fd, VFIO_IOMMU_MAP_DMA as IoctlReq, &dma_map) };
         if ret < 0 {
-            anyhow::bail!(
-                "VFIO_IOMMU_MAP_DMA failed: {}",
-                std::io::Error::last_os_error()
-            );
+            anyhow::bail!("VFIO_IOMMU_MAP_DMA failed: {}", std::io::Error::last_os_error());
         }
 
-        tracing::info!("DMA mapped: IOVA 0x0-{:#x} → vaddr {:#x}", mem_size, guest_mem_ptr as u64);
+        tracing::info!(
+            "DMA mapped: IOVA 0x0-{:#x} → vaddr {:#x}",
+            mem_size,
+            guest_mem_ptr as u64
+        );
         Ok(())
     }
 
@@ -390,7 +375,10 @@ impl VfioDevice {
     pub fn map_bar(&mut self, bar_index: usize, guest_addr: u64, size: u64) -> Result<()> {
         tracing::info!(
             "VFIO {} BAR{}: mapped at guest {:#x}, size {:#x}",
-            self.bdf, bar_index, guest_addr, size
+            self.bdf,
+            bar_index,
+            guest_addr,
+            size
         );
         Ok(())
     }
@@ -409,9 +397,7 @@ impl VfioDevice {
 
     /// Reset the device.
     pub fn reset(&self) -> Result<()> {
-        let ret = unsafe {
-            libc::ioctl(self.device_fd, VFIO_DEVICE_RESET as libc::c_ulong)
-        };
+        let ret = unsafe { libc::ioctl(self.device_fd, VFIO_DEVICE_RESET as IoctlReq) };
         if ret < 0 {
             tracing::warn!("VFIO device reset failed: {}", std::io::Error::last_os_error());
         }
@@ -444,22 +430,19 @@ fn find_iommu_group(bdf: &str) -> Result<u32> {
     let link = fs::read_link(format!("/sys/bus/pci/devices/{bdf}/iommu_group"))
         .with_context(|| format!("Device {bdf} has no IOMMU group (is iommu enabled in BIOS?)"))?;
 
-    let group_name = link.file_name()
+    let group_name = link
+        .file_name()
         .and_then(|n| n.to_str())
         .context("Invalid IOMMU group path")?;
 
-    group_name.parse::<u32>()
+    group_name
+        .parse::<u32>()
         .with_context(|| format!("Invalid IOMMU group number: {group_name}"))
 }
 
 /// Open a file read-write and return the raw fd.
 fn open_rw(path: &str) -> Result<RawFd> {
-    let fd = unsafe {
-        libc::open(
-            std::ffi::CString::new(path)?.as_ptr(),
-            libc::O_RDWR,
-        )
-    };
+    let fd = unsafe { libc::open(std::ffi::CString::new(path)?.as_ptr(), libc::O_RDWR) };
     if fd < 0 {
         anyhow::bail!("Failed to open {path}: {}", std::io::Error::last_os_error());
     }

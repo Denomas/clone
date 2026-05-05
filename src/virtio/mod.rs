@@ -128,14 +128,17 @@ pub trait VirtioDevice: Send {
     /// Downcast to concrete type for device-specific configuration.
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
-
     /// Snapshot the device-specific state as an opaque byte vector.
     ///
     /// The default implementation returns an empty vector (no state to save).
-    fn snapshot_state(&self) -> Vec<u8> { Vec::new() }
+    fn snapshot_state(&self) -> Vec<u8> {
+        Vec::new()
+    }
 
     /// Restore device-specific state from a previously-snapshotted byte vector.
     ///
     /// The default implementation accepts any input and does nothing.
-    fn restore_state(&mut self, _data: &[u8]) -> anyhow::Result<()> { Ok(()) }
+    fn restore_state(&mut self, _data: &[u8]) -> anyhow::Result<()> {
+        Ok(())
+    }
 }

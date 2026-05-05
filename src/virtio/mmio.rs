@@ -4,10 +4,10 @@
 //! The guest reads/writes to MMIO offsets and this module translates
 //! them into calls on the underlying VirtioDevice trait.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
 
 use crate::virtio::queue::Virtqueue;
 use crate::virtio::{status, VirtioDevice, MMIO_BASE, MMIO_STRIDE};
@@ -137,12 +137,7 @@ impl MmioTransport {
     ///
     /// The guest memory pointer and size are passed to the virtqueues so
     /// they can read/write descriptor chains in guest memory.
-    pub fn new_with_mem(
-        device: Box<dyn VirtioDevice>,
-        irq: u32,
-        guest_mem: *mut u8,
-        guest_mem_size: u64,
-    ) -> Self {
+    pub fn new_with_mem(device: Box<dyn VirtioDevice>, irq: u32, guest_mem: *mut u8, guest_mem_size: u64) -> Self {
         let queue_max_sizes = device.queue_max_sizes().to_vec();
         let queues: Vec<QueueState> = queue_max_sizes
             .iter()
@@ -183,7 +178,13 @@ impl MmioTransport {
     }
 
     /// Set guest memory with MMIO hole info for large VMs.
-    pub fn set_guest_memory_with_hole(&mut self, guest_mem: *mut u8, guest_mem_size: u64, hole_start: u64, hole_end: u64) {
+    pub fn set_guest_memory_with_hole(
+        &mut self,
+        guest_mem: *mut u8,
+        guest_mem_size: u64,
+        hole_start: u64,
+        hole_end: u64,
+    ) {
         self.guest_mem = guest_mem;
         self.guest_mem_size = guest_mem_size;
         if hole_start > 0 {
@@ -261,8 +262,7 @@ impl MmioTransport {
         // All standard registers are 32-bit aligned reads.
         // Config space can be byte-granularity.
         if offset >= reg::CONFIG_SPACE {
-            self.device
-                .read_config(offset - reg::CONFIG_SPACE, data);
+            self.device.read_config(offset - reg::CONFIG_SPACE, data);
             return;
         }
 
@@ -279,16 +279,8 @@ impl MmioTransport {
             reg::DEVICE_ID => self.device.device_type() as u32,
             reg::VENDOR_ID => VENDOR_ID,
             reg::DEVICE_FEATURES => self.device.features(self.device_features_sel),
-            reg::QUEUE_NUM_MAX => {
-                self.current_queue()
-                    .map(|q| q.max_size as u32)
-                    .unwrap_or(0)
-            }
-            reg::QUEUE_READY => {
-                self.current_queue()
-                    .map(|q| u32::from(q.ready))
-                    .unwrap_or(0)
-            }
+            reg::QUEUE_NUM_MAX => self.current_queue().map(|q| q.max_size as u32).unwrap_or(0),
+            reg::QUEUE_READY => self.current_queue().map(|q| u32::from(q.ready)).unwrap_or(0),
             reg::INTERRUPT_STATUS => {
                 // Merge transport interrupt_status with vhost interrupt bits.
                 //
@@ -323,8 +315,7 @@ impl MmioTransport {
     pub fn write(&mut self, offset: u64, data: &[u8]) {
         // Config space writes can be byte-granularity.
         if offset >= reg::CONFIG_SPACE {
-            self.device
-                .write_config(offset - reg::CONFIG_SPACE, data);
+            self.device.write_config(offset - reg::CONFIG_SPACE, data);
             return;
         }
 
@@ -341,13 +332,10 @@ impl MmioTransport {
                 self.device_features_sel = val;
             }
             reg::DRIVER_FEATURES => {
-                if self.device_status & status::FEATURES_OK == 0
-                    && self.device_status & status::DRIVER != 0
-                {
+                if self.device_status & status::FEATURES_OK == 0 && self.device_status & status::DRIVER != 0 {
                     // Driver is setting features before FEATURES_OK
                     self.driver_features[self.driver_features_sel as usize & 1] = val;
-                    self.device
-                        .ack_features(self.driver_features_sel, val);
+                    self.device.ack_features(self.driver_features_sel, val);
                 }
             }
             reg::DRIVER_FEATURES_SEL => {
@@ -373,9 +361,7 @@ impl MmioTransport {
                     q.ready = val == 1;
                 }
                 // Sync the virtqueue state
-                if let (Some(qs), Some(vq)) =
-                    (self.queues.get(sel), self.virtqueues.get_mut(sel))
-                {
+                if let (Some(qs), Some(vq)) = (self.queues.get(sel), self.virtqueues.get_mut(sel)) {
                     if val == 1 {
                         vq.configure(qs.desc_addr, qs.avail_addr, qs.used_addr);
                         vq.set_ready(true);
@@ -396,7 +382,8 @@ impl MmioTransport {
             reg::INTERRUPT_ACK => {
                 self.interrupt_status &= !val;
                 // Also clear the bits in the vhost interrupt atomic
-                self.vhost_interrupt.fetch_and(!val, std::sync::atomic::Ordering::Release);
+                self.vhost_interrupt
+                    .fetch_and(!val, std::sync::atomic::Ordering::Release);
             }
             reg::STATUS => {
                 self.handle_status_write(val);
@@ -461,10 +448,7 @@ impl MmioTransport {
             return;
         }
 
-        let mut vq = std::mem::replace(
-            &mut self.virtqueues[qi],
-            Virtqueue::new(0, std::ptr::null_mut(), 0),
-        );
+        let mut vq = std::mem::replace(&mut self.virtqueues[qi], Virtqueue::new(0, std::ptr::null_mut(), 0));
 
         if !vq.is_ready() {
             self.virtqueues[qi] = vq;
@@ -472,7 +456,7 @@ impl MmioTransport {
         }
 
         let mut raised_interrupt = false;
-        let is_fs = self.device.device_type() == crate::virtio::DeviceType::Fs;
+        let _is_fs = self.device.device_type() == crate::virtio::DeviceType::Fs;
 
         while let Some(chain) = vq.pop_avail() {
             let bytes_written = self.device.process_descriptor_chain(queue_idx, &chain, &vq);
@@ -525,7 +509,7 @@ impl MmioTransport {
 
         // virtio_net_hdr_v1 (12 bytes, all zeros = no offload)
         let hdr = [0u8; 12];
-        let total_len = hdr.len() + frame.len();
+        let _total_len = hdr.len() + frame.len();
         let mut written = 0usize;
         let mut src_offset = 0usize;
 
@@ -595,15 +579,18 @@ impl MmioTransport {
         // If the device was activated in the snapshot, re-activate it now.
         // This sets up vhost backends (vsock, net) with the restored queue addresses.
         if state.activated && !self.activated {
-            let queue_infos: Vec<crate::virtio::QueueInfo> = self.queues.iter().map(|q| {
-                crate::virtio::QueueInfo {
+            let queue_infos: Vec<crate::virtio::QueueInfo> = self
+                .queues
+                .iter()
+                .map(|q| crate::virtio::QueueInfo {
                     size: q.size,
                     desc_addr: q.desc_addr,
                     avail_addr: q.avail_addr,
                     used_addr: q.used_addr,
-                }
-            }).collect();
-            self.device.prepare_activate(&queue_infos, self.guest_mem, self.guest_mem_size);
+                })
+                .collect();
+            self.device
+                .prepare_activate(&queue_infos, self.guest_mem, self.guest_mem_size);
             match self.device.activate() {
                 Ok(()) => {
                     self.activated = true;
@@ -652,15 +639,18 @@ impl MmioTransport {
         // If driver sets DRIVER_OK and we haven't activated yet, do so.
         if new_bits & status::DRIVER_OK != 0 && !self.activated {
             // Pass queue configuration and guest memory info to the device
-            let queue_infos: Vec<crate::virtio::QueueInfo> = self.queues.iter().map(|q| {
-                crate::virtio::QueueInfo {
+            let queue_infos: Vec<crate::virtio::QueueInfo> = self
+                .queues
+                .iter()
+                .map(|q| crate::virtio::QueueInfo {
                     size: q.size,
                     desc_addr: q.desc_addr,
                     avail_addr: q.avail_addr,
                     used_addr: q.used_addr,
-                }
-            }).collect();
-            self.device.prepare_activate(&queue_infos, self.guest_mem, self.guest_mem_size);
+                })
+                .collect();
+            self.device
+                .prepare_activate(&queue_infos, self.guest_mem, self.guest_mem_size);
 
             match self.device.activate() {
                 Ok(()) => {
@@ -723,7 +713,13 @@ impl MmioBus {
     }
 
     /// Set guest memory with MMIO hole info.
-    pub fn set_guest_memory_with_hole(&mut self, guest_mem: *mut u8, guest_mem_size: u64, hole_start: u64, hole_end: u64) {
+    pub fn set_guest_memory_with_hole(
+        &mut self,
+        guest_mem: *mut u8,
+        guest_mem_size: u64,
+        hole_start: u64,
+        hole_end: u64,
+    ) {
         self.guest_mem = guest_mem;
         self.guest_mem_size = guest_mem_size;
         for transport in &mut self.devices {
@@ -738,10 +734,10 @@ impl MmioBus {
         let base = MMIO_BASE + (index as u64) * MMIO_STRIDE;
         let mut irq = crate::virtio::IRQ_BASE + index as u32;
         // Skip IRQ 8 (RTC on x86) to avoid genirq conflict
-        if irq >= 8 { irq += 1; }
-        let transport = MmioTransport::new_with_mem(
-            device, irq, self.guest_mem, self.guest_mem_size,
-        );
+        if irq >= 8 {
+            irq += 1;
+        }
+        let transport = MmioTransport::new_with_mem(device, irq, self.guest_mem, self.guest_mem_size);
         self.devices.push(transport);
         tracing::info!(
             "Registered virtio {:?} at MMIO {base:#x}, IRQ {irq}",
@@ -867,9 +863,7 @@ impl MmioBus {
             }
 
             let ring_idx = (used_idx % eq.size) as usize;
-            let desc_idx: u16 = unsafe {
-                *(gpa_to_hva(eq.avail_addr + 4 + ring_idx as u64 * 2) as *const u16)
-            };
+            let desc_idx: u16 = unsafe { *(gpa_to_hva(eq.avail_addr + 4 + ring_idx as u64 * 2) as *const u16) };
 
             let desc_gpa = eq.desc_addr + desc_idx as u64 * 16;
             let buf_gpa: u64 = unsafe { *(gpa_to_hva(desc_gpa) as *const u64) };
@@ -881,7 +875,9 @@ impl MmioBus {
             }
 
             // Write VIRTIO_VSOCK_EVENT_TRANSPORT_RESET (id = 0)
-            unsafe { *(gpa_to_hva(buf_gpa) as *mut u32) = 0u32.to_le(); }
+            unsafe {
+                *(gpa_to_hva(buf_gpa) as *mut u32) = 0u32.to_le();
+            }
 
             // Update used ring entry
             let used_entry_gpa = eq.used_addr + 4 + ring_idx as u64 * 8;
@@ -896,7 +892,9 @@ impl MmioBus {
             }
 
             // Set interrupt status so guest ISR processes the event
-            transport.vhost_interrupt.fetch_or(1, std::sync::atomic::Ordering::Release);
+            transport
+                .vhost_interrupt
+                .fetch_or(1, std::sync::atomic::Ordering::Release);
 
             tracing::info!("Injected vsock transport reset into event virtqueue");
             return;
@@ -1019,7 +1017,9 @@ mod tests {
             Ok(())
         }
 
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
         fn reset(&mut self) {
             self.reset_count += 1;
             self.activated = false;
@@ -1087,10 +1087,7 @@ mod tests {
 
         // ACKNOWLEDGE | DRIVER
         write_u32(&mut transport, reg::STATUS, status::ACKNOWLEDGE | status::DRIVER);
-        assert_eq!(
-            read_u32(&transport, reg::STATUS),
-            status::ACKNOWLEDGE | status::DRIVER
-        );
+        assert_eq!(read_u32(&transport, reg::STATUS), status::ACKNOWLEDGE | status::DRIVER);
 
         // ACKNOWLEDGE | DRIVER | FEATURES_OK
         write_u32(
@@ -1397,10 +1394,7 @@ mod tests {
         // Verify via read
         let mut buf = [0u8; 4];
         bus.handle_read(MMIO_BASE + reg::STATUS, &mut buf);
-        assert_eq!(
-            u32::from_le_bytes(buf),
-            status::ACKNOWLEDGE | status::DRIVER
-        );
+        assert_eq!(u32::from_le_bytes(buf), status::ACKNOWLEDGE | status::DRIVER);
     }
 
     #[test]

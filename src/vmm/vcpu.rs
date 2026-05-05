@@ -3,13 +3,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use kvm_bindings::{KVM_MAX_CPUID_ENTRIES, Msrs};
+use kvm_bindings::{Msrs, KVM_MAX_CPUID_ENTRIES};
 // AsRawFd removed — no longer needed
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use vm_memory::GuestAddress;
 
-use crate::virtio::mmio::MmioBus;
 use super::serial::{Serial, COM1_PORT_BASE, COM1_PORT_COUNT};
+use crate::virtio::mmio::MmioBus;
 
 /// Global shutdown flag — set by SIGTERM/SIGINT handler.
 /// The vCPU run loop checks this and exits cleanly so Drop runs.
@@ -140,9 +140,7 @@ impl Vcpu {
         mmio_bus: Arc<Mutex<MmioBus>>,
         serial: Arc<Mutex<Serial>>,
     ) -> Result<Self> {
-        let fd = vm_fd
-            .create_vcpu(id as u64)
-            .context("Failed to create vCPU")?;
+        let fd = vm_fd.create_vcpu(id as u64).context("Failed to create vCPU")?;
 
         // Set up CPUID -- pass through host CPUID with KVM filtering
         let mut cpuid = kvm
@@ -172,8 +170,7 @@ impl Vcpu {
             }
         }
 
-        fd.set_cpuid2(&cpuid)
-            .context("Failed to set CPUID")?;
+        fd.set_cpuid2(&cpuid).context("Failed to set CPUID")?;
 
         // Set up MSRs — enable MTRRs so the kernel initializes PAT correctly.
         // Without this, the kernel sees "MTRRs disabled" and skips PAT init,
@@ -184,9 +181,9 @@ impl Vcpu {
             // MTRRdefType (MSR 0x2FF): E=1 (bit 11), FE=1 (bit 10), default type=WB (6)
             entries[0].index = 0x2FF;
             entries[0].data = (1 << 11) | (1 << 10) | 6; // 0xC06
-            // PAT MSR (0x277): Intel recommended defaults matching QEMU/SeaBIOS
-            // PA0=WB(06) PA1=WC(01) PA2=UC-(07) PA3=UC(00)
-            // PA4=WB(06) PA5=WP(05) PA6=UC-(07) PA7=WT(04)
+                                                         // PAT MSR (0x277): Intel recommended defaults matching QEMU/SeaBIOS
+                                                         // PA0=WB(06) PA1=WC(01) PA2=UC-(07) PA3=UC(00)
+                                                         // PA4=WB(06) PA5=WP(05) PA6=UC-(07) PA7=WT(04)
             entries[1].index = 0x277;
             entries[1].data = 0x0007_0106_0007_0506_u64.swap_bytes();
             // Correct byte layout: PA7..PA0 = 04 07 05 06 00 07 01 06
@@ -205,8 +202,8 @@ impl Vcpu {
             lapic.regs[sivr_offset + 2] as u8,
             lapic.regs[sivr_offset + 3] as u8,
         ]);
-        sivr |= 1 << 8;   // Software enable
-        sivr |= 0xFF;      // Spurious vector = 0xFF
+        sivr |= 1 << 8; // Software enable
+        sivr |= 0xFF; // Spurious vector = 0xFF
         let sivr_bytes = sivr.to_le_bytes();
         lapic.regs[sivr_offset] = sivr_bytes[0] as i8;
         lapic.regs[sivr_offset + 1] = sivr_bytes[1] as i8;
@@ -248,12 +245,23 @@ impl Vcpu {
             let mut regs = fd.get_regs().context("Failed to get regs")?;
             regs.rip = entry_addr.0;
             regs.rflags = 0x2; // bit 1 is always set
-            // Linux boot protocol: rsi = pointer to boot_params (at 0x7000 by convention)
+                               // Linux boot protocol: rsi = pointer to boot_params (at 0x7000 by convention)
             regs.rsi = boot_params_addr();
             fd.set_regs(&regs).context("Failed to set regs")?;
         }
 
-        Ok(Self { id, fd, vm_fd: Arc::clone(vm_fd), mmio_bus, serial, cmos_index: 0, pm_regs: [0u8; 8], pause_state: None, pci_bus: None, deferred_tsc_deadline: None })
+        Ok(Self {
+            id,
+            fd,
+            vm_fd: Arc::clone(vm_fd),
+            mmio_bus,
+            serial,
+            cmos_index: 0,
+            pm_regs: [0u8; 8],
+            pause_state: None,
+            pci_bus: None,
+            deferred_tsc_deadline: None,
+        })
     }
 
     /// Set the shared pause state for snapshot coordination.
@@ -277,21 +285,28 @@ impl Vcpu {
         mmio_bus: Arc<Mutex<MmioBus>>,
         serial: Arc<Mutex<Serial>>,
     ) -> Result<Self> {
-        let fd = vm_fd
-            .create_vcpu(id as u64)
-            .context("Failed to create vCPU")?;
+        let fd = vm_fd.create_vcpu(id as u64).context("Failed to create vCPU")?;
 
         // Use host CPUID (not snapshot) to avoid KVM PV CPUID entries
         // that can interfere with TSC_DEADLINE MSR writes.
         // The guest sees slightly different CPUID but all hardware features match.
+        #[allow(clippy::overly_complex_bool_expr)]
         if false && !vcpu_state.cpuid.is_empty() {
             if let Ok(entries) = serde_json::from_slice::<Vec<(u32, u32, u32, u32, u32, u32, u32)>>(&vcpu_state.cpuid) {
-                let cpuid_entries: Vec<kvm_bindings::kvm_cpuid_entry2> = entries.iter()
-                    .map(|&(function, index, flags, eax, ebx, ecx, edx)| {
-                        kvm_bindings::kvm_cpuid_entry2 {
-                            function, index, flags, eax, ebx, ecx, edx, padding: [0; 3],
-                        }
-                    })
+                let cpuid_entries: Vec<kvm_bindings::kvm_cpuid_entry2> = entries
+                    .iter()
+                    .map(
+                        |&(function, index, flags, eax, ebx, ecx, edx)| kvm_bindings::kvm_cpuid_entry2 {
+                            function,
+                            index,
+                            flags,
+                            eax,
+                            ebx,
+                            ecx,
+                            edx,
+                            padding: [0; 3],
+                        },
+                    )
                     .collect();
                 if let Ok(cpuid) = kvm_bindings::CpuId::from_entries(&cpuid_entries) {
                     fd.set_cpuid2(&cpuid).context("Failed to restore CPUID")?;
@@ -381,10 +396,13 @@ impl Vcpu {
         // 7. TSC pre-restore
         if !vcpu_state.msrs.is_empty() {
             if let Ok(entries) = serde_json::from_slice::<Vec<(u32, u64)>>(&vcpu_state.msrs) {
-                let tsc_entries: Vec<kvm_bindings::kvm_msr_entry> = entries.iter()
+                let tsc_entries: Vec<kvm_bindings::kvm_msr_entry> = entries
+                    .iter()
                     .filter(|&&(idx, _)| idx == 0x10)
                     .map(|&(index, data)| kvm_bindings::kvm_msr_entry {
-                        index, data, ..Default::default()
+                        index,
+                        data,
+                        ..Default::default()
                     })
                     .collect();
                 if !tsc_entries.is_empty() {
@@ -409,7 +427,8 @@ impl Vcpu {
         if !vcpu_state.msrs.is_empty() {
             if let Ok(mut entries) = serde_json::from_slice::<Vec<(u32, u64)>>(&vcpu_state.msrs) {
                 // If TSC_DEADLINE (0x6E0) is 0, use TSC value so timer fires immediately
-                let tsc_val = entries.iter()
+                let tsc_val = entries
+                    .iter()
                     .find(|&&(idx, _)| idx == 0x10)
                     .map(|&(_, v)| v)
                     .unwrap_or(0);
@@ -425,12 +444,13 @@ impl Vcpu {
                 entries.retain(|&(idx, _)| idx != 0x6E0);
 
                 // Filter out zero-value KVM PV MSRs (write-only from guest)
-                let msr_entries: Vec<kvm_bindings::kvm_msr_entry> = entries.iter()
-                    .filter(|&&(idx, data)| {
-                        !(idx >= 0x4b564d00 && idx <= 0x4b564d07 && data == 0)
-                    })
+                let msr_entries: Vec<kvm_bindings::kvm_msr_entry> = entries
+                    .iter()
+                    .filter(|&&(idx, data)| !((0x4b564d00..=0x4b564d07).contains(&idx) && data == 0))
                     .map(|&(index, data)| kvm_bindings::kvm_msr_entry {
-                        index, data, ..Default::default()
+                        index,
+                        data,
+                        ..Default::default()
                     })
                     .collect();
                 if let Ok(msrs) = Msrs::from_entries(&msr_entries) {
@@ -456,17 +476,23 @@ impl Vcpu {
 
         tracing::info!("vCPU {} restored from template", id);
 
-        Ok(Self { id, fd, vm_fd: Arc::clone(vm_fd), mmio_bus, serial, cmos_index: 0, pm_regs: [0u8; 8], pause_state: None, pci_bus: None, deferred_tsc_deadline })
+        Ok(Self {
+            id,
+            fd,
+            vm_fd: Arc::clone(vm_fd),
+            mmio_bus,
+            serial,
+            cmos_index: 0,
+            pm_regs: [0u8; 8],
+            pause_state: None,
+            pci_bus: None,
+            deferred_tsc_deadline,
+        })
     }
 
     /// Serialize a KVM struct to bytes.
     fn to_bytes<T>(val: &T) -> Vec<u8> {
-        unsafe {
-            std::slice::from_raw_parts(
-                val as *const T as *const u8,
-                std::mem::size_of::<T>(),
-            ).to_vec()
-        }
+        unsafe { std::slice::from_raw_parts(val as *const T as *const u8, std::mem::size_of::<T>()).to_vec() }
     }
 
     /// Capture complete vCPU state for snapshotting.
@@ -486,13 +512,18 @@ impl Vcpu {
         let msrs_bytes = self.capture_msrs().unwrap_or_default();
 
         // Save CPUID
-        let cpuid = self.fd.get_cpuid2(KVM_MAX_CPUID_ENTRIES)
+        let cpuid = self
+            .fd
+            .get_cpuid2(KVM_MAX_CPUID_ENTRIES)
             .map(|c| {
                 let entries = c.as_slice();
                 serde_json::to_vec(
-                    &entries.iter().map(|e| (e.function, e.index, e.flags, e.eax, e.ebx, e.ecx, e.edx))
-                        .collect::<Vec<_>>()
-                ).unwrap_or_default()
+                    &entries
+                        .iter()
+                        .map(|e| (e.function, e.index, e.flags, e.eax, e.ebx, e.ecx, e.edx))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default()
             })
             .unwrap_or_default();
 
@@ -519,7 +550,7 @@ impl Vcpu {
         // Get the full list of MSRs KVM says need saving
         let kvm = kvm_ioctls::Kvm::new().context("open /dev/kvm for MSR list")?;
         let msr_list = kvm.get_msr_index_list().context("get MSR index list")?;
-        let mut msr_indices: Vec<u32> = msr_list.as_slice().iter().map(|&i| i).collect();
+        let mut msr_indices: Vec<u32> = msr_list.as_slice().to_vec();
 
         // Add MSRs that KVM doesn't include in msrs_to_save but that are
         // critical for snapshot/restore (like Firecracker's SERIALIZABLE_MSR_RANGES)
@@ -532,8 +563,12 @@ impl Vcpu {
         // Read MSRs in chunks (KVM limits entries per call)
         let mut all_entries: Vec<(u32, u64)> = Vec::new();
         for chunk in msr_indices.chunks(64) {
-            let entries: Vec<kvm_bindings::kvm_msr_entry> = chunk.iter()
-                .map(|&idx| kvm_bindings::kvm_msr_entry { index: idx, ..Default::default() })
+            let entries: Vec<kvm_bindings::kvm_msr_entry> = chunk
+                .iter()
+                .map(|&idx| kvm_bindings::kvm_msr_entry {
+                    index: idx,
+                    ..Default::default()
+                })
                 .collect();
             if let Ok(mut msrs) = Msrs::from_entries(&entries) {
                 if let Ok(count) = self.fd.get_msrs(&mut msrs) {
@@ -605,8 +640,10 @@ impl Vcpu {
             if let Ok(mut lapic) = self.fd.get_lapic() {
                 // Force one-shot mode if snapshot had TSC-deadline
                 let lvt = u32::from_le_bytes([
-                    lapic.regs[0x320] as u8, lapic.regs[0x321] as u8,
-                    lapic.regs[0x322] as u8, lapic.regs[0x323] as u8,
+                    lapic.regs[0x320] as u8,
+                    lapic.regs[0x321] as u8,
+                    lapic.regs[0x322] as u8,
+                    lapic.regs[0x323] as u8,
                 ]);
                 let vector = lvt & 0xFF;
                 if vector != 0 && ((lvt >> 17) & 3) == 2 {
@@ -631,7 +668,12 @@ impl Vcpu {
                 if let Ok(regs) = self.fd.get_regs() {
                     tracing::info!(
                         "vCPU {} shutting down: RIP={:#x} RSP={:#x} RFLAGS={:#x} exits={} serial={}",
-                        self.id, regs.rip, regs.rsp, regs.rflags, exit_count, serial_bytes
+                        self.id,
+                        regs.rip,
+                        regs.rsp,
+                        regs.rflags,
+                        exit_count,
+                        serial_bytes
                     );
                 } else {
                     tracing::info!("vCPU {} shutting down (signal received)", self.id);
@@ -647,13 +689,17 @@ impl Vcpu {
                         ExitAction::IoOut { port, byte }
                     }
                     VcpuExit::IoIn(port, data) => {
-                        if port >= COM1_PORT_BASE && port < COM1_PORT_BASE + COM1_PORT_COUNT {
+                        if (COM1_PORT_BASE..COM1_PORT_BASE + COM1_PORT_COUNT).contains(&port) {
                             let offset = port - COM1_PORT_BASE;
                             let val = self.serial.lock().unwrap().read(offset);
-                            if let Some(b) = data.first_mut() { *b = val; }
+                            if let Some(b) = data.first_mut() {
+                                *b = val;
+                            }
                         } else if port == CMOS_DATA_PORT {
-                            if let Some(b) = data.first_mut() { *b = cmos_read(self.cmos_index); }
-                        } else if port >= 0x600 && port <= 0x607 {
+                            if let Some(b) = data.first_mut() {
+                                *b = cmos_read(self.cmos_index);
+                            }
+                        } else if (0x600..=0x607).contains(&port) {
                             let offset = (port - 0x600) as usize;
                             if let Some(b) = data.first_mut() {
                                 *b = self.pm_regs[offset];
@@ -669,11 +715,7 @@ impl Vcpu {
                         // Try PCI bus first (ECAM + BAR regions)
                         if let Some(ref pci_bus) = self.pci_bus {
                             let bus = pci_bus.lock().unwrap();
-                            if bus.handle_ecam_read(addr, data) {
-                                handled = true;
-                            } else if bus.handle_bar_read(addr, data) {
-                                handled = true;
-                            }
+                            handled = bus.handle_ecam_read(addr, data) || bus.handle_bar_read(addr, data);
                         }
                         if !handled {
                             let bus = self.mmio_bus.lock().unwrap();
@@ -691,7 +733,10 @@ impl Vcpu {
                         data_bytes[..copy_len].copy_from_slice(&data[..copy_len]);
                         ExitAction::MmioWrite { addr, data_bytes, len }
                     }
-                    VcpuExit::Debug(dbg_info) => ExitAction::Debug { pc: dbg_info.pc, dr6: dbg_info.dr6 },
+                    VcpuExit::Debug(dbg_info) => ExitAction::Debug {
+                        pc: dbg_info.pc,
+                        dr6: dbg_info.dr6,
+                    },
                     other => ExitAction::Unknown(format!("{:?}", other)),
                 },
                 Err(e) => {
@@ -717,7 +762,13 @@ impl Vcpu {
                         if let Ok(sregs) = self.fd.get_sregs() {
                             tracing::error!(
                                 "vCPU {} FATAL: RIP={:#x} RSP={:#x} CR3={:#x} CR2={:#x} RFLAGS={:#x} exit={}",
-                                self.id, regs.rip, regs.rsp, sregs.cr3, sregs.cr2, regs.rflags, exit_count
+                                self.id,
+                                regs.rip,
+                                regs.rsp,
+                                sregs.cr3,
+                                sregs.cr2,
+                                regs.rflags,
+                                exit_count
                             );
                         }
                     }
@@ -733,13 +784,12 @@ impl Vcpu {
             // Log first 5 exits for debugging fork issues
             if !first_exits_logged && exit_count <= 5 {
                 tracing::info!("vCPU {} exit #{}: {:?}", self.id, exit_count, action);
-                if exit_count == 5 { first_exits_logged = true; }
+                if exit_count == 5 {
+                    first_exits_logged = true;
+                }
             }
-            if exit_count % 100_000 == 0 {
-                tracing::info!(
-                    "vCPU {} exits={}, serial_bytes={}",
-                    self.id, exit_count, serial_bytes
-                );
+            if exit_count.is_multiple_of(100_000) {
+                tracing::info!("vCPU {} exits={}, serial_bytes={}", self.id, exit_count, serial_bytes);
             }
 
             match action {
@@ -753,7 +803,7 @@ impl Vcpu {
                     break;
                 }
                 ExitAction::IoOut { port, byte } => {
-                    if port >= COM1_PORT_BASE && port < COM1_PORT_BASE + COM1_PORT_COUNT {
+                    if (COM1_PORT_BASE..COM1_PORT_BASE + COM1_PORT_COUNT).contains(&port) {
                         let offset = port - COM1_PORT_BASE;
                         if offset == 0 {
                             serial_bytes += 1;
@@ -771,7 +821,7 @@ impl Vcpu {
                         self.cmos_index = byte & 0x7F;
                     } else if port == CMOS_DATA_PORT {
                         // ignore
-                    } else if port >= 0x600 && port <= 0x607 {
+                    } else if (0x600..=0x607).contains(&port) {
                         let offset = (port - 0x600) as usize;
                         self.pm_regs[offset] = byte;
                     } else {
@@ -785,11 +835,8 @@ impl Vcpu {
                     // Try PCI bus first (ECAM + BAR regions)
                     if let Some(ref pci_bus) = self.pci_bus {
                         let mut bus = pci_bus.lock().unwrap();
-                        if bus.handle_ecam_write(addr, &data_bytes[..len]) {
-                            pci_handled = true;
-                        } else if bus.handle_bar_write(addr, &data_bytes[..len]) {
-                            pci_handled = true;
-                        }
+                        pci_handled = bus.handle_ecam_write(addr, &data_bytes[..len])
+                            || bus.handle_bar_write(addr, &data_bytes[..len]);
                     }
                     if !pci_handled {
                         let (handled, irq) = {
@@ -818,7 +865,6 @@ impl Vcpu {
         Ok(())
     }
 }
-
 
 /// Minimal CMOS/RTC register read.
 ///
@@ -865,27 +911,27 @@ fn setup_long_mode(sregs: &mut kvm_bindings::kvm_sregs) {
     sregs.idt.limit = 0;
 
     sregs.cr0 = 0x8003_0001; // PG | PE | WP | ET
-    sregs.cr3 = 0x9000;       // PML4 base
-    sregs.cr4 = 0x20;         // PAE
-    sregs.efer = 0x500;       // LME | LMA (long mode enable + active)
+    sregs.cr3 = 0x9000; // PML4 base
+    sregs.cr4 = 0x20; // PAE
+    sregs.efer = 0x500; // LME | LMA (long mode enable + active)
 
     // Code segment -- 64-bit mode
     sregs.cs.base = 0;
     sregs.cs.limit = 0xFFFF_FFFF;
     sregs.cs.selector = 0x10; // GDT entry 2
-    sregs.cs.type_ = 0xB;    // execute/read, accessed
+    sregs.cs.type_ = 0xB; // execute/read, accessed
     sregs.cs.present = 1;
     sregs.cs.dpl = 0;
-    sregs.cs.db = 0;         // must be 0 for 64-bit
+    sregs.cs.db = 0; // must be 0 for 64-bit
     sregs.cs.s = 1;
-    sregs.cs.l = 1;          // 64-bit mode
+    sregs.cs.l = 1; // 64-bit mode
     sregs.cs.g = 1;
 
     // Data segment
     sregs.ds.base = 0;
     sregs.ds.limit = 0xFFFF_FFFF;
     sregs.ds.selector = 0x18; // GDT entry 3
-    sregs.ds.type_ = 0x3;    // read/write, accessed
+    sregs.ds.type_ = 0x3; // read/write, accessed
     sregs.ds.present = 1;
     sregs.ds.dpl = 0;
     sregs.ds.db = 1;

@@ -88,8 +88,7 @@ fn main() {
     // overlay.ko is always needed. vsock modules are only loaded if the agent
     // binary is embedded — on CoW fork snapshots, we skip vsock so the forked
     // VM starts with clean vsock state (no stale connections from the template).
-    let has_agent = Path::new("/usr/local/bin/clone-agent").exists()
-        || Path::new("/clone-agent").exists();
+    let has_agent = Path::new("/usr/local/bin/clone-agent").exists() || Path::new("/clone-agent").exists();
 
     if has_agent {
         for module in &[
@@ -113,7 +112,9 @@ fn main() {
     let overlay_mode = parse_param(&cmdline, "clone.overlay").unwrap_or("none");
     let rootfs_type = parse_param(&cmdline, "clone.fstype").unwrap_or("auto");
 
-    msg(&format!("[clone-init] rootfs={rootfs_mode} overlay={overlay_mode} fstype={rootfs_type}"));
+    msg(&format!(
+        "[clone-init] rootfs={rootfs_mode} overlay={overlay_mode} fstype={rootfs_type}"
+    ));
 
     // Wait for the root block device to appear
     let root_dev = "/dev/vda";
@@ -123,11 +124,7 @@ fn main() {
     mkdir("/mnt");
     mkdir("/mnt/root");
 
-    let mount_flags: u64 = if rootfs_mode == "ro" {
-        MS_RDONLY
-    } else {
-        0
-    };
+    let mount_flags: u64 = if rootfs_mode == "ro" { MS_RDONLY } else { 0 };
 
     if rootfs_type == "auto" {
         // Try common filesystems
@@ -228,15 +225,21 @@ fn main() {
 
                 let ptr = unsafe {
                     libc::mmap(
-                        std::ptr::null_mut(), 4096, libc::PROT_READ, libc::MAP_SHARED,
-                        f.as_raw_fd(), page_offset as libc::off_t,
+                        std::ptr::null_mut(),
+                        4096,
+                        libc::PROT_READ,
+                        libc::MAP_SHARED,
+                        f.as_raw_fd(),
+                        page_offset as libc::off_t,
                     )
                 };
                 if ptr != libc::MAP_FAILED {
                     let offset_in_page = (id_addr - page_offset) as usize;
                     let data = unsafe { std::slice::from_raw_parts((ptr as *const u8).add(offset_in_page), 256) };
                     let _ = fs::write("/run/clone-identity", data);
-                    unsafe { libc::munmap(ptr, 4096); }
+                    unsafe {
+                        libc::munmap(ptr, 4096);
+                    }
                 }
             }
         }
@@ -259,12 +262,14 @@ fn main() {
                 let c_path_env = CString::new("PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin").unwrap();
                 let c_home = CString::new("HOME=/root").unwrap();
                 let c_term = CString::new("TERM=linux").unwrap();
-                let envp: [*const libc::c_char; 4] = [
-                    c_path_env.as_ptr(), c_home.as_ptr(), c_term.as_ptr(), std::ptr::null()
-                ];
+                let envp: [*const libc::c_char; 4] =
+                    [c_path_env.as_ptr(), c_home.as_ptr(), c_term.as_ptr(), std::ptr::null()];
                 libc::execve(c_path.as_ptr(), argv.as_ptr(), envp.as_ptr());
                 // If execve fails, write error marker and exit
-                let _ = fs::write("/tmp/clone-agent-exec-failed", format!("errno: {}", *libc::__errno_location()));
+                let _ = fs::write(
+                    "/tmp/clone-agent-exec-failed",
+                    format!("errno: {}", *libc::__errno_location()),
+                );
                 libc::_exit(1);
             } else if pid > 0 {
                 // agent forked successfully
@@ -335,7 +340,9 @@ fn do_mount(source: &str, target: &str, fstype: Option<&str>, flags: u64, data: 
             c_target.as_ptr(),
             c_fstype.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
             flags,
-            c_data.as_ref().map_or(std::ptr::null(), |s| s.as_ptr() as *const libc::c_void),
+            c_data
+                .as_ref()
+                .map_or(std::ptr::null(), |s| s.as_ptr() as *const libc::c_void),
         )
     };
     ret == 0
