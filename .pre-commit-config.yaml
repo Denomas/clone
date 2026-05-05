@@ -1,0 +1,39 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-autofix
+        name: cargo autofix (fmt + fix + clippy --fix)
+        entry: bash -c 'mise exec -- cargo fmt && mise exec -- cargo fix --allow-dirty --allow-staged 2>/dev/null; mise exec -- cargo clippy --fix --allow-dirty --allow-staged 2>/dev/null; mise exec -- cargo fmt'
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-fmt-check
+        name: cargo fmt check
+        entry: mise exec -- cargo fmt -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: mise exec -- cargo clippy -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-test
+        name: cargo test
+        entry: mise exec -- cargo test
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: cargo-deny
+        name: cargo deny
+        entry: mise exec -- cargo deny check
+        language: system
+        files: Cargo\.(toml|lock)
+        pass_filenames: false
+        stages: [pre-push]
