@@ -1375,14 +1375,19 @@ test_guest_networking() {
         fail "DNS resolution failed" "$CTRL_RESPONSE"
     fi
 
-    # Verify TCP connectivity (wget to a known host)
-    control_cmd '{"cmd":"exec","command":"wget","args":["-q","-O","/dev/null","--timeout=5","http://8.8.8.8/"]}' "$VM_SOCKET" 15
-    # wget returns non-zero for non-200 responses, but any TCP connection attempt proves TCP works
-    # Google's DNS HTTP returns 404, which is fine — it means TCP connected
-    if echo "$CTRL_RESPONSE" | grep -qv "network is unreachable\|Connection refused\|can.t connect"; then
-        pass "TCP connectivity works"
+    # Verify TCP connectivity. Use `nc -z` against 8.8.8.8:443 — it exits
+    # 0 only on a real SYN/ACK round-trip, so an empty response or
+    # timeout produces a non-zero exit code we can check directly. The
+    # previous `wget | grep -qv "unreachable"` was broken-positive: an
+    # empty wget response (timeout) lacked every error string and
+    # silently passed.
+    control_cmd '{"cmd":"exec","command":"nc","args":["-z","-w","5","8.8.8.8","443"]}' "$VM_SOCKET" 15
+    local tcp_exit
+    tcp_exit=$(echo "$CTRL_RESPONSE" | sed -n 's/.*"exit_code":\([0-9-]*\).*/\1/p')
+    if [ "$tcp_exit" = "0" ]; then
+        pass "TCP connectivity works (nc -z 8.8.8.8:443 exit=0)"
     else
-        fail "TCP connectivity failed" "$CTRL_RESPONSE"
+        fail "TCP connectivity failed (nc exit=$tcp_exit)" "$CTRL_RESPONSE"
     fi
 
     stop_vm
@@ -1518,10 +1523,13 @@ test_serial_login_prompt() {
     fi
     pass "Console socket delivered early boot bytes (replay works)"
 
-    # Then, prove a no-trailing-newline payload (systemd's UNSUPP line is
-    # truncated mid-line with `…`) arrives. The old buffered code wouldn't
-    # have flushed it; the new per-byte tee does.
-    if attach_console_assert "UNSUPP\|binfmt_mis\|clone login:" 120; then
+    # Then, prove a no-trailing-newline payload arrives. The old buffered
+    # code wouldn't have flushed bytes without a \n; the new per-byte tee
+    # does. The login prompt (`<host> login: ` waiting for user input, no
+    # \n) is the universal partial-line probe across distros — Alpine
+    # emits `(none) login:`, Ubuntu/systemd emits `clone login:` or
+    # binfmt_misc UNSUPP truncations.
+    if attach_console_assert "UNSUPP\|binfmt_mis\|login:" 120; then
         pass "Partial-line byte (no-newline payload) reached console socket"
     else
         cp -f "$VM_SERIAL_LOG" /tmp/last-vm-serial.log 2>/dev/null || true
