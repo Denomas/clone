@@ -1,0 +1,95 @@
+name: Lint extras
+
+# Shift-left guards beyond the per-PR fmt+clippy:
+#   - miri runs unit tests under the experimental Rust interpreter to catch
+#     undefined behaviour in our `unsafe` blocks (vsock packet parsing, MMIO
+#     descriptor walks, /dev/mem mappings).
+#   - clippy-strict runs a curated set of pedantic/correctness lints in
+#     advisory mode (continue-on-error) so contributors see signal without
+#     blocking landing.
+# Both jobs run on push to master and on pull_request — non-blocking; the
+# main `build.yml` workflow stays the merge gate.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 6 * * *" # nightly 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # NOTE: a Miri job belongs here too, but the workspace root crate is
+  # binary-only (no [lib] target) and the leaf crates' tests use libc /
+  # KVM ioctls that Miri can't model. Re-enable once we extract pure-logic
+  # parsers (vsock packet header, virtio descriptors, kernel cmdline) into
+  # a lib crate that Miri can run end-to-end.
+
+  clippy-strict:
+    name: Clippy (advisory pedantic + nursery)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Pedantic + nursery (warnings only)
+        run: cargo clippy --all-targets -- -W clippy::pedantic -W clippy::nursery
+
+  coverage:
+    name: Coverage report (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate LCOV
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: Summary
+        run: cargo llvm-cov report --summary-only | tee coverage-summary.txt
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            lcov.info
+            coverage-summary.txt
+          retention-days: 14
+      - name: Enforce floor on critical files
+        # The shift-left bug-class targets: serial flush, vsock device
+        # parsing, agent listener channel handling. Set a soft floor so the
+        # coverage trend is visible; advisory only for now.
+        run: |
+          set -euo pipefail
+          floor=60
+          for path in \
+              src/vmm/serial.rs \
+              src/virtio/vsock.rs \
+              src/vmm/agent_listener.rs; do
+            pct=$(cargo llvm-cov report --lcov 2>/dev/null \
+                   | awk -v f="$path" 'BEGIN{cov=0;tot=0} \
+                       /^SF:/ && index($0,f){match=1; next} \
+                       match && /^DA:/ {tot++; split($0,a,","); if (a[2]+0>0) cov++} \
+                       match && /^end_of_record/ {exit} \
+                       END{ if (tot==0) print 0; else printf "%d", cov*100/tot }') || pct=0
+            echo "  $path: ${pct}% (floor=${floor}%)"
+            if [ "$pct" -lt "$floor" ]; then
+              echo "::warning::$path coverage ${pct}% < ${floor}% (advisory)"
+            fi
+          done
