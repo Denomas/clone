@@ -286,8 +286,8 @@ jobs:
             esac
           }
 
-          curated_r="${{ needs.clippy-curated.result }}"
-          strict_r="${{ needs.clippy-strict.result }}"
+          curated_r="${{ needs['clippy-curated'].result }}"
+          strict_r="${{ needs['clippy-strict'].result }}"
           cov_r="${{ needs.coverage.result }}"
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -300,8 +300,8 @@ jobs:
             echo
             echo "| Job | Result | Detail |"
             echo "|---|---|---|"
-            echo "| Clippy curated (blocking) | $(icon $curated_r) \`$curated_r\` | violations: ${{ needs.clippy-curated.outputs.violations }} |"
-            echo "| Clippy advisory (pedantic + nursery) | $(icon $strict_r) \`$strict_r\` | warnings: ${{ needs.clippy-strict.outputs.warnings }} |"
+            echo "| Clippy curated (blocking) | $(icon $curated_r) \`$curated_r\` | violations: ${{ needs['clippy-curated'].outputs.violations }} |"
+            echo "| Clippy advisory (pedantic + nursery) | $(icon $strict_r) \`$strict_r\` | warnings: ${{ needs['clippy-strict'].outputs.warnings }} |"
             echo "| Coverage ratchet (blocking) | $(icon $cov_r) \`$cov_r\` | workspace line: ${{ needs.coverage.outputs.total_line }} |"
             echo
             echo "### Coverage by file"
@@ -334,8 +334,8 @@ jobs:
         # `failure` without blocking thanks to continue-on-error on the
         # job itself, but a real cancellation propagates.
         if: |
-          contains(fromJSON('["failure","cancelled"]'), needs.clippy-curated.result) ||
-          contains(fromJSON('["cancelled"]'), needs.clippy-strict.result) ||
+          contains(fromJSON('["failure","cancelled"]'), needs['clippy-curated'].result) ||
+          contains(fromJSON('["cancelled"]'), needs['clippy-strict'].result) ||
           contains(fromJSON('["failure","cancelled"]'), needs.coverage.result)
         run: |
           echo "Blocking lint-extras job did not pass; failing aggregator."
