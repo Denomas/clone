@@ -1,7 +1,7 @@
 {
   "extends": ["@commitlint/config-conventional"],
   "rules": {
-    "header-max-length": [2, "always", 100],
+    "header-max-length": [1, "always", 100],
     "type-enum": [
       2,
       "always",
@@ -19,9 +19,9 @@
         "test"
       ]
     ],
-    "scope-case": [2, "always", "kebab-case"],
+    "scope-case": [0],
     "subject-case": [
-      2,
+      1,
       "never",
       ["start-case", "pascal-case", "upper-case"]
     ]
