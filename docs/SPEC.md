@@ -192,6 +192,29 @@ The primary source of <20ms cold starts.
 - **Static IP injection** via guest agent — no DHCP needed
 - Works with existing Linux bridge/NAT setup on the host
 
+**Docker coexistence**: when Docker is installed it sets the host's
+`FORWARD` chain default policy to `DROP` and inserts a `DOCKER-USER`
+jump as the first rule of `FORWARD`. Plain `iptables -A FORWARD …
+ACCEPT` rules sit at the bottom of the chain — Docker's filtering can
+short-circuit the chain before they fire, and the policy `DROP`
+catches anything that falls through. Clone's auto-NAT step therefore
+also inserts ACCEPT rules into `DOCKER-USER` when that chain exists.
+`DOCKER-USER` is the documented user-extension hook that Docker leaves
+empty for exactly this purpose, so we coexist with Docker without
+mutating any rule Docker manages itself. On hosts without Docker the
+chain is absent and we skip the insert.
+
+> **Roadmap — per-VM network namespace isolation.** The current
+> `--net` mode shares the host's main netfilter plane with every other
+> service on the box (Docker, libvirt, system firewalls). For
+> multi-tenant deployments we plan a future per-VM netns + veth-pair
+> mode: each VM gets its own network namespace with its own routing
+> table, conntrack and firewall, joined to the host via a veth pair
+> that is the only point where host policy applies. This buys true
+> isolation between VMs and decouples guest networking from whatever
+> netfilter setup the operator runs on the host. Tracked under
+> "Needs Work" below.
+
 ### 7. Storage
 
 - **virtio-block** with read/write/flush support
@@ -397,6 +420,33 @@ clone list --no-daemon    # PID, state, vCPUs, RSS for each VM
 - **MSI-X interrupt routing** — stubbed in PCI bus, devices work via legacy INTx. Full MSI-X needed for high-performance passthrough.
 - **SR-IOV / vGPU / mdev** — single device passthrough works, but no virtual function or mediated device support.
 - **Confidential VMs (TDX/SEV)** — no TEE support yet.
+- **Per-VM network namespace isolation** — today's `--net` mode plumbs
+  every VM's TAP device into the host's main network namespace, so all
+  guests share one routing table, one conntrack and one netfilter
+  plane with whatever the operator runs on the host (Docker, libvirt,
+  the host firewall, other VMMs). The roadmap mode puts each VM in
+  its own Linux network namespace joined to the host by a single
+  veth pair: the VM's TAP, IP, routing, conntrack and iptables rules
+  all live inside the namespace, and the only point where host
+  policy can affect (or be affected by) the guest is the veth peer
+  on the host side.
+  
+  Why this matters:
+  - **Multi-tenant security**: a compromised VM today can observe
+    and influence the same conntrack table the host uses. Per-VM
+    netns gives a hardware-isolation-grade boundary at the network
+    layer too — a guest cannot see other guests' flows or the host's
+    firewall state because they live in a different namespace.
+  - **Coexistence with operator firewalls**: any rule the operator
+    sets on the host (Docker's FORWARD `policy DROP`, corporate
+    firewall management, libvirt's nat tables) only sees the veth
+    peer, not the per-VM TAP, so guest reachability stops depending
+    on the operator's exact iptables layout.
+  - **Cleaner teardown**: deleting the namespace tears down every
+    socket, route and rule the VM created in one syscall. No leaked
+    iptables rules after a crashed VMM.
+  
+  See Section 6 for the design sketch.
 
 ---
 
