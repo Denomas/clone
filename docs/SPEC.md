@@ -218,6 +218,20 @@ chain is absent and we skip the insert.
 > netfilter setup the operator runs on the host. Tracked under
 > "Needs Work" below.
 
+> **Roadmap — aarch64-unknown-linux-musl support.** The codebase
+> calls a number of x86_64-only KVM ioctls without `cfg(target_arch)`
+> gating: PIT (`set_pit2` / `get_pit2`), x86 IRQ chip
+> (`set_irqchip` / `get_irqchip` / `create_irq_chip`), KVM clock
+> (`get_clock` / `kvmclock_ctrl`). Cross-compiling to
+> aarch64-unknown-linux-musl currently produces ~114 errors against
+> kvm-ioctls' arm-only API surface. Real aarch64 support requires
+> (1) gating every x86-only ioctl with `cfg(target_arch = "x86_64")`,
+> (2) wiring up the GICv3 / GICv2 IRQ chip and PMU clock equivalents
+> for arm64, (3) replacing the PIT-based timer fallback with the arm
+> generic timer, and (4) revisiting the boot path for the arm boot
+> protocol. The aarch64 target is intentionally out of the release
+> matrix until that work lands.
+
 ### 7. Storage
 
 - **virtio-block** with read/write/flush support

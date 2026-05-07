@@ -30,10 +30,12 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             artifact: clone-linux-x86_64
-            use_cross: false
-          - target: aarch64-unknown-linux-musl
-            artifact: clone-linux-aarch64
-            use_cross: true
+    # NOTE: aarch64-unknown-linux-musl is intentionally not in this
+    # matrix. The current codebase calls x86_64-only KVM ioctls
+    # (set_pit2 / set_irqchip / kvmclock_ctrl / get_pit2 /
+    # get_irqchip / get_clock) without arch-cfg gating, so the
+    # aarch64 target produces ~114 compile errors. Re-add aarch64
+    # once the cross-arch refactor in docs/SPEC.md "Roadmap" lands.
     steps:
       - uses: actions/checkout@v6
         with:
@@ -47,21 +49,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
-          fi
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       - name: Build static binary
-        run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Prepare artifact
         run: |
@@ -70,7 +64,6 @@ jobs:
           sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
 
       - name: Smoke test
-        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           chmod +x target/${{ matrix.target }}/release/clone
           target/${{ matrix.target }}/release/clone --help
@@ -118,9 +111,7 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: |
-            artifacts/clone-linux-x86_64
-            artifacts/clone-linux-aarch64
+          subject-path: artifacts/clone-linux-x86_64
 
       - name: Create release
         uses: softprops/action-gh-release@v3
@@ -130,8 +121,6 @@ jobs:
           files: |
             artifacts/clone-linux-x86_64
             artifacts/clone-linux-x86_64.sha256
-            artifacts/clone-linux-aarch64
-            artifacts/clone-linux-aarch64.sha256
             artifacts/SHA256SUMS
             artifacts/SHA256SUMS.sig
             artifacts/SHA256SUMS.pem
