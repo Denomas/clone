@@ -117,6 +117,7 @@ jobs:
     continue-on-error: true
     outputs:
       warnings: ${{ steps.cnt.outputs.warnings }}
+      categories: ${{ steps.cnt.outputs.categories }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -127,13 +128,42 @@ jobs:
         # --color never strips ANSI escapes so the warning-counter grep
         # below matches '^warning: ...' lines reliably regardless of the
         # workflow-level CARGO_TERM_COLOR setting.
-        run: cargo clippy --all-targets --color never -- -W clippy::pedantic -W clippy::nursery 2>&1 | tee /tmp/strict.log
-      - name: Count warnings
+        run: cargo clippy --all-targets --color never --message-format=json -- -W clippy::pedantic -W clippy::nursery > /tmp/strict.json 2>/tmp/strict.err || true
+      - name: Count and categorise warnings
         id: cnt
         if: always()
         run: |
-          w=$(grep -cE "^warning: " /tmp/strict.log || true)
-          echo "warnings=$w" >> "$GITHUB_OUTPUT"
+          # cargo clippy --message-format=json emits one JSON object per
+          # diagnostic plus build messages. Filter to compiler-message
+          # records carrying a clippy lint code, then count + group.
+          if [ ! -s /tmp/strict.json ]; then
+            echo "warnings=0" >> "$GITHUB_OUTPUT"
+            echo "categories=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jq -r '
+            select(.reason == "compiler-message")
+            | .message
+            | select(.level == "warning")
+            | (.code.code // "unknown")
+          ' /tmp/strict.json 2>/dev/null > /tmp/lint_codes.tsv || : > /tmp/lint_codes.tsv
+
+          total=$(wc -l < /tmp/lint_codes.tsv)
+          # Top 10 lint codes by count.
+          sort /tmp/lint_codes.tsv | uniq -c | sort -rn | head -10 \
+            > /tmp/top_lints.tsv
+          {
+            echo "warnings=$total"
+            echo "categories<<MARKDOWN_EOF"
+            awk '{
+              count=$1
+              # Re-glue the rest of the line as the lint name (handles
+              # any trailing whitespace).
+              $1=""; sub(/^ +/,"")
+              printf "| `%s` | %d |\n", $0, count
+            }' /tmp/top_lints.tsv
+            echo "MARKDOWN_EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Job summary
         if: always()
         run: |
@@ -141,6 +171,14 @@ jobs:
             echo "## Clippy (pedantic + nursery, advisory)"
             echo
             echo "Warnings: \`${{ steps.cnt.outputs.warnings }}\`"
+            echo
+            echo "<details open><summary>Top 10 lint categories</summary>"
+            echo
+            echo "| Lint | Count |"
+            echo "|---|---:|"
+            echo "${{ steps.cnt.outputs.categories }}"
+            echo
+            echo '</details>'
             echo
             echo "_Ratchet items into the curated set as they go to zero._"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -151,6 +189,9 @@ jobs:
     outputs:
       table_md: ${{ steps.ratchet.outputs.table_md }}
       total_line: ${{ steps.totals.outputs.total_line }}
+      total_region: ${{ steps.totals.outputs.total_region }}
+      total_function: ${{ steps.totals.outputs.total_function }}
+      bottom10: ${{ steps.totals.outputs.bottom10 }}
       have_base: ${{ steps.ratchet.outputs.have_base }}
     steps:
       - uses: actions/checkout@v6
@@ -169,11 +210,51 @@ jobs:
           cargo llvm-cov report --summary-only | tee coverage-summary.txt
           # The TOTAL row has 12 numeric columns plus the leading label:
           # Regions Missed Cover% Functions Missed Cover% Lines Missed
-          # Cover% Branches Missed Cover%. We want the line coverage
-          # percent, which is the third '%' value — pick it via grep.
-          total_line=$(awk '/^TOTAL/ {print}' coverage-summary.txt \
-                       | grep -oE '[0-9.]+%' | sed -n '3p')
-          echo "total_line=${total_line:-n/a}" >> "$GITHUB_OUTPUT"
+          # Cover% Branches Missed Cover%. We want all three percent
+          # values (region / function / line); pick them by index.
+          total_row=$(awk '/^TOTAL/ {print}' coverage-summary.txt)
+          total_region=$(echo "$total_row" | grep -oE '[0-9.]+%' | sed -n '1p')
+          total_function=$(echo "$total_row" | grep -oE '[0-9.]+%' | sed -n '2p')
+          total_line=$(echo "$total_row" | grep -oE '[0-9.]+%' | sed -n '3p')
+
+          # Bottom-10 files by line coverage. Skip the 'Filename' header
+          # and 'TOTAL' row; sort by the third '%' column (line cover).
+          # Output each row as 'path|pct' so the aggregator can render
+          # without re-parsing.
+          awk '
+            /^Filename|^---|^$/ { next }
+            /^TOTAL/ { next }
+            {
+              # The Cover columns are at fixed positions but vary by
+              # alignment; use grep-equivalent to pick the third %.
+              line=$0
+              # Get the path: everything up to the first sequence of
+              # whitespace + digits.
+              path=$1
+              # Count percent values to find the third one (line cov).
+              n=0; cov="0%"
+              for (i=2; i<=NF; i++) {
+                if ($i ~ /%$/) {
+                  n++
+                  if (n==3) { cov=$i; break }
+                }
+              }
+              # Strip trailing % for sort key.
+              num=cov; sub(/%/,"",num); sub(/\..*/,"",num)
+              printf "%05d\t%s\t%s\n", num+0, path, cov
+            }
+          ' coverage-summary.txt | sort -n | head -10 \
+            | awk -F'\t' '{printf "| <code>%s</code> | %s |\n", $2, $3}' \
+            > /tmp/bottom10.md
+
+          {
+            echo "total_region=${total_region:-n/a}"
+            echo "total_function=${total_function:-n/a}"
+            echo "total_line=${total_line:-n/a}"
+            echo "bottom10<<MARKDOWN_EOF"
+            cat /tmp/bottom10.md
+            echo "MARKDOWN_EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Upload report
         uses: actions/upload-artifact@v7
         with:
@@ -371,9 +452,27 @@ jobs:
             echo "| Clippy advisory (pedantic + nursery) | $(icon $strict_r) \`$strict_r\` | warnings: ${{ needs['clippy-strict'].outputs.warnings }} |"
             echo "| Coverage ratchet (blocking) | $(icon $cov_r) \`$cov_r\` | workspace line: ${{ needs.coverage.outputs.total_line }} |"
             echo
-            echo "### Coverage by file"
+            echo "**Workspace coverage:** region ${{ needs.coverage.outputs.total_region }} · function ${{ needs.coverage.outputs.total_function }} · line ${{ needs.coverage.outputs.total_line }}"
+            echo
+            echo "### Coverage by file (ratchet)"
             echo
             echo "${{ needs.coverage.outputs.table_md }}"
+            echo
+            echo "<details><summary>Bottom 10 files by line coverage</summary>"
+            echo
+            echo "| File | Line % |"
+            echo "|---|---:|"
+            echo "${{ needs.coverage.outputs.bottom10 }}"
+            echo
+            echo '</details>'
+            echo
+            echo "<details><summary>Top 10 advisory clippy lint categories</summary>"
+            echo
+            echo "| Lint | Count |"
+            echo "|---|---:|"
+            echo "${{ needs['clippy-strict'].outputs.categories }}"
+            echo
+            echo '</details>'
             echo
             echo "Coverage artifact: [coverage-report]($run_url#artifacts)"
             if [ "${{ needs.coverage.outputs.have_base }}" != "1" ] && [ "${{ github.event_name }}" = "pull_request" ]; then

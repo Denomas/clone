@@ -119,12 +119,17 @@ jobs:
       tests_duration: ${{ steps.test_metrics.outputs.tests_duration }}
       binary_size: ${{ steps.bin_size.outputs.size }}
       binary_size_human: ${{ steps.bin_size.outputs.size_human }}
+      cache_hit: ${{ steps.cache.outputs.cache-hit }}
+      per_binary: ${{ steps.test_metrics.outputs.per_binary }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
+      # Capture id so the summary aggregator can surface cache-hit
+      # vs cache-miss in the dashboard alongside the build duration.
+      - id: cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Install musl tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -153,6 +158,29 @@ jobs:
           line_ignored=$(grep -oP '\d+(?= ignored)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
           line_filtered=$(grep -oP '\d+(?= filtered out)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
           duration=$(grep -oP 'finished in \K[0-9.]+s' /tmp/test.log | tail -1)
+
+          # Per-binary breakdown: cargo test prefixes every test binary
+          # block with a 'Running unittests src/main.rs (target/.../<id>)'
+          # or 'Running tests/<file>.rs (target/.../<id>)' line followed
+          # by 'running N tests'. Walk the log in order, emit one row
+          # per binary as 'name|count'.
+          awk '
+            /^[[:space:]]*Running .* \(target/ {
+              # Pull the binary basename out of the parenthesised path,
+              # then strip the trailing -<hash>.
+              p = $0
+              sub(/.*\(/, "", p); sub(/\).*/, "", p)
+              n = p; sub(/.*\//, "", n); sub(/-[a-f0-9]+$/, "", n)
+              cur = n
+              next
+            }
+            /^running [0-9]+ tests?$/ && cur != "" {
+              c = $2
+              printf "%s|%d\n", cur, c
+              cur = ""
+            }
+          ' /tmp/test.log > /tmp/per_binary.tsv
+
           {
             echo "tests_total=$line_total"
             echo "tests_passed=$line_pass"
@@ -160,6 +188,9 @@ jobs:
             echo "tests_ignored=$line_ignored"
             echo "tests_filtered=$line_filtered"
             echo "tests_duration=$duration"
+            echo "per_binary<<MARKDOWN_EOF"
+            awk -F'|' '{printf "| <code>%s</code> | %d |\n", $1, $2}' /tmp/per_binary.tsv
+            echo "MARKDOWN_EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Smoke test binary
@@ -268,6 +299,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.code == 'true'
+    outputs:
+      advisories: ${{ steps.audit_json.outputs.advisories }}
+      advisory_count: ${{ steps.audit_json.outputs.advisory_count }}
     steps:
       - uses: actions/checkout@v6
       # Pinned to master HEAD (commit 858dc40, 2026-03-20) because the
@@ -279,13 +313,49 @@ jobs:
       - uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Capture audit advisories (JSON)
+        # rustsec/audit-check posts annotations to the run page, but
+        # the dashboard sticky needs the actual advisory IDs and links
+        # so the reviewer can see RUSTSEC-YYYY-NNNN at a glance. Run
+        # cargo-audit a second time directly with --json so we can
+        # extract structured records into a markdown list.
+        id: audit_json
+        if: always()
+        run: |
+          if ! command -v cargo-audit >/dev/null 2>&1; then
+            cargo install --locked cargo-audit >/dev/null 2>&1 || true
+          fi
+          cargo audit --json > /tmp/audit.json 2>/tmp/audit.err || true
+          n=$(jq -r '.vulnerabilities.count // 0' /tmp/audit.json 2>/dev/null || echo 0)
+          if [ "$n" = "0" ] || [ -z "$n" ]; then
+            echo "advisory_count=0" >> "$GITHUB_OUTPUT"
+            echo "advisories=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Render markdown rows.
+          jq -r '.vulnerabilities.list[] |
+            "| [" + .advisory.id + "](https://rustsec.org/advisories/" + .advisory.id + ".html) | " + .package.name + " " + .package.version + " | " + (.advisory.title|gsub("[\\|\\n]";" ")) + " |"
+          ' /tmp/audit.json > /tmp/audit-rows.md
+          {
+            echo "advisory_count=$n"
+            echo "advisories<<MARKDOWN_EOF"
+            cat /tmp/audit-rows.md
+            echo "MARKDOWN_EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Job summary
         if: always()
         run: |
           {
             echo "## Security audit (rustsec)"
             echo
-            echo "Result: \`${{ job.status }}\`"
+            echo "Result: \`${{ job.status }}\` · advisories: \`${{ steps.audit_json.outputs.advisory_count }}\`"
+            count="${{ steps.audit_json.outputs.advisory_count }}"
+            if [ -n "$count" ] && [ "$count" != "0" ]; then
+              echo
+              echo "| ID | Package | Title |"
+              echo "|---|---|---|"
+              echo "${{ steps.audit_json.outputs.advisories }}"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   summary:
@@ -342,6 +412,135 @@ jobs:
             echo "binary_size=$base_size"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Fetch run timing
+        # Pull job-level started_at / completed_at from the API so
+        # the dashboard can render a 'Duration' column without each
+        # job having to track its own clock. Using the run's own
+        # GITHUB_TOKEN keeps the call inside the run's permission
+        # scope; failure here just leaves the column blank.
+        id: timing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          repo="${{ github.repository }}"
+          run_id="${{ github.run_id }}"
+          # Allow upstream jobs to settle into 'completed' before we
+          # query — the aggregator's 'if: always()' fires alongside.
+          gh api "repos/$repo/actions/runs/$run_id/jobs?per_page=100" \
+            --jq '.jobs[] | "\(.name)\t\(.started_at)\t\(.completed_at)"' \
+            > /tmp/jobs.tsv 2>/dev/null
+          # Convert to "name|seconds" pairs for downstream rendering.
+          : > /tmp/job_durations.tsv
+          while IFS=$'\t' read -r name s c; do
+            [ -z "$s" ] || [ -z "$c" ] || [ "$s" = "null" ] || [ "$c" = "null" ] && continue
+            ss=$(date -d "$s" +%s 2>/dev/null || echo 0)
+            cc=$(date -d "$c" +%s 2>/dev/null || echo 0)
+            d=$((cc - ss))
+            [ "$d" -lt 0 ] && d=0
+            printf "%s|%d\n" "$name" "$d" >> /tmp/job_durations.tsv
+          done < /tmp/jobs.tsv
+
+          # Helper to look up a job's duration by display name.
+          lookup() {
+            grep -F -- "$1|" /tmp/job_durations.tsv | head -1 | cut -d'|' -f2
+          }
+          {
+            echo "changes_dur=$(lookup 'Detect changes')"
+            echo "fmt_dur=$(lookup 'Format')"
+            echo "clippy_dur=$(lookup 'Clippy')"
+            echo "build_dur=$(lookup 'Build & Test')"
+            echo "msrv_dur=$(lookup 'MSRV check')"
+            echo "deny_dur=$(lookup 'Dependency check')"
+            echo "security_dur=$(lookup 'Security audit')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fetch base Cargo.lock for diff
+        if: github.event_name == 'pull_request'
+        id: lockdiff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          repo="${{ github.repository }}"
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          # Pull base Cargo.lock content via the contents API.
+          gh api "repos/$repo/contents/Cargo.lock?ref=$base_sha" --jq '.content' \
+            | base64 -d > /tmp/base.lock 2>/dev/null
+          if [ ! -s /tmp/base.lock ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # We can't access the PR's working tree from the aggregator
+          # job (we never checkout). Pull current Cargo.lock the same
+          # way using github.sha (which is the merge ref on PR runs).
+          gh api "repos/$repo/contents/Cargo.lock?ref=${{ github.sha }}" --jq '.content' \
+            | base64 -d > /tmp/cur.lock 2>/dev/null
+          if [ ! -s /tmp/cur.lock ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Extract package@version pairs from each lock and compute
+          # added / removed / upgraded sets. Each '[[package]]' block
+          # has 'name = "x"' and 'version = "y"' on consecutive lines.
+          extract() {
+            awk '
+              /^\[\[package\]\]/ { in_pkg = 1; n=""; v=""; next }
+              in_pkg && /^name = / { gsub(/"/,""); n=$3; next }
+              in_pkg && /^version = / { gsub(/"/,""); v=$3; printf "%s\t%s\n", n, v; in_pkg=0; n=""; v="" }
+            ' "$1"
+          }
+          extract /tmp/base.lock | sort -u > /tmp/base.pkgs
+          extract /tmp/cur.lock  | sort -u > /tmp/cur.pkgs
+
+          # Added: in cur not in base (by name+version).
+          comm -13 /tmp/base.pkgs /tmp/cur.pkgs > /tmp/added.tsv
+          # Removed: in base not in cur.
+          comm -23 /tmp/base.pkgs /tmp/cur.pkgs > /tmp/removed.tsv
+          # Upgrades: name appears in both with different versions.
+          # Build name-keyed dicts and intersect.
+          awk -F'\t' 'NR==FNR { base[$1]=$2; next } $1 in base && base[$1]!=$2 { printf "%s\t%s\t%s\n", $1, base[$1], $2 }' \
+            /tmp/base.pkgs /tmp/cur.pkgs > /tmp/upgraded.tsv
+
+          a=$(wc -l < /tmp/added.tsv)
+          r=$(wc -l < /tmp/removed.tsv)
+          u=$(wc -l < /tmp/upgraded.tsv)
+
+          # Render markdown — only the non-empty sections, with each
+          # capped at 20 rows so we don't blow past the comment limit.
+          : > /tmp/lockdiff.md
+          if [ "$u" -gt 0 ]; then
+            echo "**Upgraded ($u):**" >> /tmp/lockdiff.md
+            head -20 /tmp/upgraded.tsv | awk -F'\t' '{printf "- `%s`: `%s` → `%s`\n", $1, $2, $3}' >> /tmp/lockdiff.md
+            [ "$u" -gt 20 ] && echo "- _…and $((u-20)) more_" >> /tmp/lockdiff.md
+            echo >> /tmp/lockdiff.md
+          fi
+          if [ "$a" -gt 0 ]; then
+            echo "**Added ($a):**" >> /tmp/lockdiff.md
+            head -20 /tmp/added.tsv | awk -F'\t' '{printf "- `%s` `%s`\n", $1, $2}' >> /tmp/lockdiff.md
+            [ "$a" -gt 20 ] && echo "- _…and $((a-20)) more_" >> /tmp/lockdiff.md
+            echo >> /tmp/lockdiff.md
+          fi
+          if [ "$r" -gt 0 ]; then
+            echo "**Removed ($r):**" >> /tmp/lockdiff.md
+            head -20 /tmp/removed.tsv | awk -F'\t' '{printf "- `%s` `%s`\n", $1, $2}' >> /tmp/lockdiff.md
+            [ "$r" -gt 20 ] && echo "- _…and $((r-20)) more_" >> /tmp/lockdiff.md
+            echo >> /tmp/lockdiff.md
+          fi
+          if [ "$a" = "0" ] && [ "$r" = "0" ] && [ "$u" = "0" ]; then
+            echo "_Cargo.lock is identical to base._" > /tmp/lockdiff.md
+          fi
+
+          {
+            echo "available=true"
+            echo "added=$a"
+            echo "removed=$r"
+            echo "upgraded=$u"
+            echo "diff_md<<MARKDOWN_EOF"
+            cat /tmp/lockdiff.md
+            echo "MARKDOWN_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Aggregate job results
         id: agg
         run: |
@@ -353,6 +552,13 @@ jobs:
               skipped) echo "⏭️" ;;
               *) echo "❓" ;;
             esac
+          }
+
+          fmt_dur() {
+            local s="$1"
+            [ -z "$s" ] || [ "$s" = "0" ] && { echo "—"; return; }
+            if [ "$s" -lt 60 ]; then echo "${s}s";
+            else echo "$((s/60))m$((s%60))s"; fi
           }
 
           # Per-job result with icon.
@@ -367,6 +573,9 @@ jobs:
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
           base_avail="${{ steps.base.outputs.available }}"
+          cache_hit="${{ needs.build.outputs.cache_hit }}"
+          [ "$cache_hit" = "true" ] && cache_label="✅ hit" || cache_label="❌ miss"
+          [ -z "$cache_hit" ] && cache_label="—"
 
           # Compute delta strings (with sign) when base is available.
           tests_delta=""
@@ -386,29 +595,56 @@ jobs:
             size_delta=" (${sgn}${sh} vs base)"
           fi
 
+          adv_count="${{ needs.security.outputs.advisory_count }}"
+
           # Compose markdown body.
           {
             echo "## CI · Build & Test — \`$sha_short\`"
             echo
-            echo "Run: [#${{ github.run_number }}]($run_url)"
+            echo "Run: [#${{ github.run_number }}]($run_url) · cache: $cache_label"
             echo
-            echo "| Job | Result |"
-            echo "|---|---|"
-            echo "| Detect changes  | $(icon $changes_r) \`$changes_r\` |"
-            echo "| Format          | $(icon $fmt_r) \`$fmt_r\` |"
-            echo "| Clippy          | $(icon $clippy_r) \`$clippy_r\` |"
-            echo "| Build & Test    | $(icon $build_r) \`$build_r\` |"
-            echo "| MSRV check      | $(icon $msrv_r) \`$msrv_r\` |"
-            echo "| Dependency check| $(icon $deny_r) \`$deny_r\` |"
-            echo "| Security audit  | $(icon $security_r) \`$security_r\` |"
+            echo "| Job | Result | Duration |"
+            echo "|---|---|---:|"
+            echo "| Detect changes  | $(icon $changes_r) \`$changes_r\` | $(fmt_dur ${{ steps.timing.outputs.changes_dur }}) |"
+            echo "| Format          | $(icon $fmt_r) \`$fmt_r\` | $(fmt_dur ${{ steps.timing.outputs.fmt_dur }}) |"
+            echo "| Clippy          | $(icon $clippy_r) \`$clippy_r\` | $(fmt_dur ${{ steps.timing.outputs.clippy_dur }}) |"
+            echo "| Build & Test    | $(icon $build_r) \`$build_r\` | $(fmt_dur ${{ steps.timing.outputs.build_dur }}) |"
+            echo "| MSRV check      | $(icon $msrv_r) \`$msrv_r\` | $(fmt_dur ${{ steps.timing.outputs.msrv_dur }}) |"
+            echo "| Dependency check| $(icon $deny_r) \`$deny_r\` | $(fmt_dur ${{ steps.timing.outputs.deny_dur }}) |"
+            echo "| Security audit  | $(icon $security_r) \`$security_r\` | $(fmt_dur ${{ steps.timing.outputs.security_dur }}) |"
             echo
             if [ "$build_r" = "success" ]; then
               echo "**Tests:** ${{ needs.build.outputs.tests_passed }} passed${tests_delta} · ${{ needs.build.outputs.tests_failed }} failed · ${{ needs.build.outputs.tests_ignored }} ignored · ${{ needs.build.outputs.tests_filtered }} filtered out (in ${{ needs.build.outputs.tests_duration }})"
+              echo
+              echo "<details><summary>Per-binary breakdown</summary>"
+              echo
+              echo "| Binary | Tests |"
+              echo "|---|---:|"
+              echo "${{ needs.build.outputs.per_binary }}"
+              echo
+              echo "</details>"
               echo
               echo "**Binary:** \`target/x86_64-unknown-linux-musl/release/clone\` — ${{ needs.build.outputs.binary_size_human }}${size_delta} ([download artifact]($run_url#artifacts))"
             else
               echo "_Build & Test did not finish successfully; see job log for details._"
             fi
+
+            if [ "$adv_count" != "0" ] && [ -n "$adv_count" ]; then
+              echo
+              echo "### Security advisories ($adv_count)"
+              echo
+              echo "| ID | Package | Title |"
+              echo "|---|---|---|"
+              echo "${{ needs.security.outputs.advisories }}"
+            fi
+
+            if [ "${{ steps.lockdiff.outputs.available }}" = "true" ]; then
+              echo
+              echo "### Cargo.lock diff (vs base)"
+              echo
+              echo "${{ steps.lockdiff.outputs.diff_md }}"
+            fi
+
             if [ "$base_avail" != "true" ] && [ "${{ github.event_name }}" = "pull_request" ]; then
               echo
               echo "_Base-branch metrics unavailable for this run (no successful master CI run with metrics yet); deltas omitted._"
