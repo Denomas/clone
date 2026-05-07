@@ -68,3 +68,27 @@ strip = true
 [[bin]]
 name = "clone"
 path = "src/main.rs"
+
+# ── Clippy lint config (shift-left) ──────────────────────────────────────
+# Errors: kept narrow so the lint gate stays green during regular dev.
+# Warnings: high-signal lints that would have flagged the kinds of bugs
+# we shipped (silent swallowed `Result`s, panicking on user input,
+# integer overflow on guest-supplied lengths).
+[workspace.lints.clippy]
+# Hard errors — debugging leftovers and unfinished code never ship.
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+# The next set tend to flag real bugs (panicking on guest-supplied data,
+# integer overflow in length fields, swallowed Results) but exist all over
+# the legacy code; left at `allow` until that backlog is paid down so the
+# clippy gate above stays meaningful.
+unwrap_used = "allow"
+expect_used = "allow"
+indexing_slicing = "allow"
+integer_division = "allow"
+panic = "allow"
+unreachable = "allow"
+
+[lints]
+workspace = true

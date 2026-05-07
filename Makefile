@@ -24,6 +24,7 @@
         ci lint deny audit \
         e2e e2e-quick e2e-boot e2e-snapshot e2e-storage e2e-security \
         e2e-migration e2e-devices e2e-multivm \
+        e2e-shift-left bisect-bug1 bisect-bug2 coverage \
         initrd clean
 
 # ── Top-level ────────────────────────────────────────────────────────────
@@ -122,6 +123,29 @@ e2e-multivm: build
 	@echo "Running multi-VM tests..."
 	sudo $(E2E_ENV) ./tests/e2e/run_all.sh \
 		test_concurrent_vms test_memory_accounting
+
+# ── Shift-left guards ─────────────────────────────────────────────────────
+# Targeted reproducers we can run via `git bisect run` to attribute new
+# regressions to a specific commit.
+
+e2e-shift-left: build
+	@echo "Running shift-left guard tests (heartbeat + serial flush + boot budget)..."
+	sudo $(E2E_ENV) ./tests/e2e/run_all.sh \
+		test_agent_heartbeat test_serial_login_prompt test_boot_determinism
+
+bisect-bug1: build
+	@echo "Bisect repro for Bug #1 (silent agent loop wedge)..."
+	sudo $(E2E_ENV) ./tests/e2e/run_all.sh test_agent_heartbeat
+
+bisect-bug2: build
+	@echo "Bisect repro for Bug #2 (serial console buffered until \\n)..."
+	sudo $(E2E_ENV) ./tests/e2e/run_all.sh test_serial_login_prompt
+
+# ── Coverage (advisory) ──────────────────────────────────────────────────
+coverage:
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install --locked cargo-llvm-cov
+	cargo llvm-cov --workspace --html --output-dir target/coverage
+	@echo "HTML report: target/coverage/index.html"
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
