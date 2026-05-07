@@ -11,6 +11,12 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
+  # id-token + attestations are required by
+  # actions/attest-build-provenance to mint a Sigstore attestation
+  # tying the produced binary to this run, this commit, and this
+  # workflow file. Without these scopes the action exits non-zero.
+  id-token: write
+  attestations: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -128,6 +134,8 @@ jobs:
       nextest_v: ${{ steps.toolchain.outputs.nextest }}
       build_warnings: ${{ steps.build_warn.outputs.warnings }}
       fail_trace: ${{ steps.test_metrics.outputs.fail_trace }}
+      sbom_packages: ${{ steps.sbom.outputs.packages }}
+      attestation_url: ${{ steps.attest.outputs.attestation-url }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -318,6 +326,48 @@ jobs:
           name: clone-linux-x86_64
           path: target/x86_64-unknown-linux-musl/release/clone
           retention-days: 7
+
+      - name: Install cargo-sbom
+        # Generates a software bill of materials for the workspace
+        # so every build has a verifiable list of dependencies pinned
+        # at the same Cargo.lock version that produced the binary.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-sbom
+
+      - name: Generate SBOMs
+        id: sbom
+        run: |
+          cargo sbom --output-format cyclone_dx_json_1_5 > /tmp/sbom.cdx.json
+          cargo sbom --output-format spdx_json_2_3   > /tmp/sbom.spdx.json
+          # Count component entries from the CycloneDX SBOM (excluding
+          # the root component) so the dashboard can surface the
+          # dependency footprint at a glance.
+          n=$(jq '[.components[]?] | length' /tmp/sbom.cdx.json 2>/dev/null || echo 0)
+          [ -z "$n" ] && n=0
+          echo "packages=$n" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: |
+            /tmp/sbom.cdx.json
+            /tmp/sbom.spdx.json
+          retention-days: 90
+
+      - name: Attest binary build provenance
+        # Mints a Sigstore (DSSE/in-toto) attestation tying the
+        # produced binary to this run's commit SHA, builder identity,
+        # and workflow file path. The attestation lands in GitHub's
+        # transparency log and can be verified later with
+        # `gh attestation verify`. Skipped on pull_request because PR
+        # builds are throwaway and don't need provenance.
+        id: attest
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: target/x86_64-unknown-linux-musl/release/clone
 
       - name: Write metrics manifest
         # Snapshot the CI build's headline metrics into a tiny JSON file
@@ -828,6 +878,16 @@ jobs:
               if [ -n "$warn_n" ] && [ "$warn_n" != "0" ]; then
                 echo
                 echo "**Compile warnings:** \`$warn_n\` (see Build & Test job log)"
+              fi
+              sbom_n="${{ needs.build.outputs.sbom_packages }}"
+              if [ -n "$sbom_n" ] && [ "$sbom_n" != "0" ]; then
+                echo
+                echo "**SBOM:** \`$sbom_n\` packages (CycloneDX 1.5 + SPDX 2.3 in artifact \`sbom\`)"
+              fi
+              att_url="${{ needs.build.outputs.attestation_url }}"
+              if [ -n "$att_url" ]; then
+                echo
+                echo "**Attestation:** [Sigstore build provenance]($att_url)"
               fi
             else
               echo "_Build & Test did not finish successfully; see job log for details._"
