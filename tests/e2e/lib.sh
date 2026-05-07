@@ -37,6 +37,12 @@ cleanup() {
             wait "$pid" 2>/dev/null || true
         fi
     done
+    # Snapshot work dir (serial logs etc) before deleting so failed runs leave
+    # forensic state.
+    if [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ]; then
+        rm -rf /tmp/last-e2e-workdir 2>/dev/null || true
+        cp -a "$WORK_DIR" /tmp/last-e2e-workdir 2>/dev/null || true
+    fi
     # Remove temp files
     for f in "${CLEANUP_FILES[@]:-}"; do
         rm -rf "$f" 2>/dev/null || true
@@ -44,7 +50,7 @@ cleanup() {
     # Remove work dir
     rm -rf "$WORK_DIR" 2>/dev/null || true
 }
-trap cleanup EXIT
+[ -n "${E2E_NOCLEANUP:-}" ] || trap cleanup EXIT
 
 # ── Helper: track a PID for cleanup ──────────────────────────────────────
 track_pid() { CLEANUP_PIDS+=("$1"); }
@@ -388,6 +394,10 @@ start_vm_rootfs() {
 
     echo "  [start_vm_rootfs] CMD: $CLONE run ${default_args[*]} ${extra_args[*]:-}" >&2
 
+    # Pin the VM serial log to a stable forensic path so failed runs leave
+    # something behind after WORK_DIR cleanup.
+    : > /tmp/last-vm-serial.log 2>/dev/null || true
+
     $CLONE run \
         "${default_args[@]}" \
         "${extra_args[@]:-}" \
@@ -398,6 +408,16 @@ start_vm_rootfs() {
     VM_SOCKET="/tmp/clone-${VM_PID}.sock"
     track_pid "$VM_PID"
     track_file "$serial_log"
+
+    # Background mirror — `cat` follows the file as it grows because the VMM
+    # holds the fd open for the lifetime of the VM. Stop when VM exits.
+    (
+        while kill -0 "$VM_PID" 2>/dev/null; do
+            cp -f "$serial_log" /tmp/last-vm-serial.log 2>/dev/null || true
+            sleep 2
+        done
+        cp -f "$serial_log" /tmp/last-vm-serial.log 2>/dev/null || true
+    ) &
 }
 
 # ── Stop a VM ─────────────────────────────────────────────────────────────
@@ -420,6 +440,72 @@ stop_vm() {
         fi
         wait "$pid" 2>/dev/null || true
     fi
+}
+
+# ── Count heartbeats observed in the VMM's stderr log ─────────────────────
+# Heartbeats are vsock OP_RW frames carrying a JSON Heartbeat message
+# (~150 bytes). Ready is 20 bytes; we filter on payload_len ≥ 60 to keep
+# the matcher resilient to schema changes while excluding control frames.
+# Usage: count_heartbeats [serial_log]
+count_heartbeats() {
+    local log="${1:-$VM_SERIAL_LOG}"
+    [ -f "$log" ] || { echo 0; return; }
+    # grep -c exits 1 when zero matches — swallow that to avoid `0\n0` output
+    local n
+    n=$(grep -c -E 'vsock TX op=5 .*payload_len=(6[0-9]|[7-9][0-9]|[1-9][0-9]{2,})' "$log" 2>/dev/null || true)
+    echo "${n:-0}"
+}
+
+# ── Wait until N heartbeats have arrived from the guest agent ────────────
+# Catches the "agent connects, sends Ready, then loop wedges" class of bugs.
+# Usage: wait_for_n_heartbeats N [timeout_seconds]
+wait_for_n_heartbeats() {
+    local need="$1"
+    local timeout="${2:-15}"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local got
+        got=$(count_heartbeats)
+        [ "$got" -ge "$need" ] && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+# ── Read from the console Unix socket and assert pattern appears ─────────
+# Catches the "serial output buffered until newline" class of bugs — the
+# pattern can be a no-newline prompt like "login:" and we assert it
+# arrives on the socket within the timeout.
+#
+# Polls every 5s with a fresh attach so the on-attach history-replay is
+# checked against the pattern as the boot progresses, rather than tying
+# us to a single long-running socat read.
+#
+# Usage: attach_console_assert <pattern> [timeout_seconds] [vm_pid]
+# Sets: ATTACH_OUTPUT
+attach_console_assert() {
+    local pattern="$1"
+    local timeout="${2:-30}"
+    local pid="${3:-$VM_PID}"
+    local sock="/tmp/clone-${pid}.console"
+    local snap="$WORK_DIR/console-snap-$pid.bin"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        : > "$snap"
+        timeout 3 socat -u "UNIX-CONNECT:$sock" - </dev/null > "$snap" 2>/dev/null || true
+        local snap_size
+        snap_size=$(stat -c %s "$snap" 2>/dev/null || echo 0)
+        # Persist a copy outside WORK_DIR so it survives the trap-cleanup
+        # — useful when a test fails and the workdir gets torn down.
+        cp -f "$snap" /tmp/last-console-snap.bin 2>/dev/null || true
+        if [ "$snap_size" -gt 0 ] && tr -d '\0' < "$snap" | grep -q "$pattern"; then
+            ATTACH_OUTPUT=$(tr -d '\0' < "$snap" | tail -c 4096)
+            return 0
+        fi
+        sleep 5
+    done
+    ATTACH_OUTPUT=$(tr -d '\0' < "$snap" 2>/dev/null | tail -c 4096 || echo "")
+    return 1
 }
 
 # ── Create a raw disk image with optional content ─────────────────────────

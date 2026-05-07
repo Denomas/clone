@@ -1437,6 +1437,202 @@ test_exec_latency() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════
+# Test: Agent heartbeat — agent connects AND keeps iterating (Bug #1 guard)
+# ══════════════════════════════════════════════════════════════════════════
+test_agent_heartbeat() {
+    echo -e "\n${CYAN}▶ test_agent_heartbeat${NC}"
+
+    local src_rootfs="${ROOTFS_E2E:-${ROOTFS_ALPINE:-}}"
+    if [ -z "$src_rootfs" ] || [ ! -f "$src_rootfs" ]; then
+        skip "test_agent_heartbeat" "No ROOTFS_E2E/ROOTFS_ALPINE set"
+        return
+    fi
+
+    start_vm_rootfs "$src_rootfs" --mem-mb 256 --vcpus 1
+
+    if ! wait_for_socket 30; then
+        fail "Control socket did not appear for heartbeat test"
+        stop_vm
+        return
+    fi
+
+    # Agent should connect, ready, then start emitting heartbeats every 2s.
+    # 5 heartbeats in 18s = catches a wedged loop (Bug #1) within ~10s.
+    if wait_for_n_heartbeats 5 18; then
+        pass "Agent emitted ≥5 heartbeats (loop iterating)"
+    else
+        local got
+        got=$(count_heartbeats)
+        fail "Agent stuck after Ready: only $got heartbeats in 18s (Bug #1 regression?)"
+    fi
+
+    stop_vm
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# Test: Serial console socket delivers bytes — Bug #2 guard.
+#
+# Bug #2 was: src/vmm/serial.rs buffered guest serial output until a \n
+# arrived, so anything without a trailing newline (notably the `clone login: `
+# prompt) never reached the `clone attach` Unix socket. Fix tees every byte
+# to the socket immediately AND keeps a rolling history that's replayed when
+# a client attaches late.
+#
+# Test strategy: boot, wait for control socket, attach, and assert (a) the
+# socket actually delivers bytes (proving live tee + history-replay works)
+# and (b) one of the partial-line systemd boot lines that the old code
+# would have eaten arrives through the socket. That partial line shows up
+# within ~30s of boot — far before login: — so the test stays fast.
+# ══════════════════════════════════════════════════════════════════════════
+test_serial_login_prompt() {
+    echo -e "\n${CYAN}▶ test_serial_login_prompt${NC}"
+
+    if ! command -v socat >/dev/null 2>&1; then
+        skip "test_serial_login_prompt" "socat not installed"
+        return
+    fi
+
+    local src_rootfs="${ROOTFS_E2E:-${ROOTFS_ALPINE:-}}"
+    if [ -z "$src_rootfs" ] || [ ! -f "$src_rootfs" ]; then
+        skip "test_serial_login_prompt" "No ROOTFS_E2E/ROOTFS_ALPINE set"
+        return
+    fi
+
+    # Single vCPU — multi-vCPU exposes a separate LAPIC/RCU starvation issue
+    # we don't want to hide here; this test isolates the serial flush bug.
+    start_vm_rootfs "$src_rootfs" --mem-mb 512 --vcpus 1
+
+    if ! wait_for_socket 60; then
+        fail "Control socket did not appear for serial flush test"
+        stop_vm
+        return
+    fi
+
+    # First, prove early boot bytes (kernel + clone-init writes) reach the
+    # console socket — this validates per-byte tee + history replay.
+    if ! attach_console_assert "clone-init" 60; then
+        cp -f "$VM_SERIAL_LOG" /tmp/last-vm-serial.log 2>/dev/null || true
+        fail "Console socket received no boot bytes within 60s (history replay broken?)"
+        stop_vm
+        return
+    fi
+    pass "Console socket delivered early boot bytes (replay works)"
+
+    # Then, prove a no-trailing-newline payload (systemd's UNSUPP line is
+    # truncated mid-line with `…`) arrives. The old buffered code wouldn't
+    # have flushed it; the new per-byte tee does.
+    if attach_console_assert "UNSUPP\|binfmt_mis\|clone login:" 120; then
+        pass "Partial-line byte (no-newline payload) reached console socket"
+    else
+        cp -f "$VM_SERIAL_LOG" /tmp/last-vm-serial.log 2>/dev/null || true
+        fail "Partial-line byte never reached console socket (Bug #2 regression?)"
+    fi
+
+    stop_vm
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# Test: Boot-time determinism budget — flags silent boot wedges.
+# ══════════════════════════════════════════════════════════════════════════
+# A silent systemd hang (the Bug #1 timer-starvation flavour) showed up as
+# "boot reaches initrd, then nothing". This test asserts the agent is
+# heartbeating within a sane budget on a small initrd boot (no rootfs);
+# missing that budget means the boot path is wedged somewhere new.
+test_boot_determinism() {
+    echo -e "\n${CYAN}▶ test_boot_determinism${NC}"
+    local budget_s=20
+    local start=$SECONDS
+    start_vm --cmdline "console=ttyS0 reboot=k panic=1 pci=off nokaslr quiet"
+    if ! wait_for_socket 10; then
+        fail "test_boot_determinism: control socket missing within 10s"
+        stop_vm
+        return
+    fi
+    if ! wait_for_serial "CLONE_BOOT_OK" "$budget_s"; then
+        fail "test_boot_determinism: did not reach CLONE_BOOT_OK within ${budget_s}s (silent wedge?)"
+        stop_vm
+        return
+    fi
+    local elapsed=$((SECONDS - start))
+    pass "Boot reached CLONE_BOOT_OK in ${elapsed}s (budget ${budget_s}s)"
+    stop_vm
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# Test: Timer/IRQ tick audit — flags LAPIC starvation on multi-vCPU.
+# ══════════════════════════════════════════════════════════════════════════
+# The systemd RCU stall we hit was caused by under-delivered LAPIC timer
+# interrupts on idle vCPUs. This test boots a multi-vCPU rootfs VM and
+# exec()s `grep LOC /proc/interrupts` to assert each CPU is receiving
+# timer interrupts. Skips if no rootfs available.
+test_timer_ticks() {
+    echo -e "\n${CYAN}▶ test_timer_ticks${NC}"
+
+    # Guards against the LAPIC-timer-on-idle-vCPU starvation bug. Was a
+    # regression once: kvmclock + tsc-deadline were disabled in the fresh
+    # vCPU CPUID setup, the guest fell back to TSC calibration via PIT
+    # which the in-kernel irqchip under-delivered, and idle APs received
+    # ~zero LOC interrupts. Fix re-enabled both CPUID bits and pinned the
+    # host TSC frequency (src/vmm/vcpu.rs).
+    local src_rootfs="${ROOTFS_E2E:-${ROOTFS_ALPINE:-}}"
+    if [ -z "$src_rootfs" ] || [ ! -f "$src_rootfs" ]; then
+        skip "test_timer_ticks" "No ROOTFS_E2E/ROOTFS_ALPINE set"
+        return
+    fi
+
+    start_vm_rootfs "$src_rootfs" --mem-mb 256 --vcpus 2
+
+    if ! wait_for_socket 30; then
+        fail "test_timer_ticks: control socket did not appear"
+        stop_vm
+        return
+    fi
+
+    # Wait for the agent to be exec-ready. ~5s heartbeats means the loop is
+    # alive; if heartbeats don't fire, exec would hang the test.
+    if ! wait_for_n_heartbeats 3 20; then
+        fail "test_timer_ticks: agent not heartbeating (cannot exec into VM)"
+        stop_vm
+        return
+    fi
+
+    # Snapshot LOC counts twice with a delay to compute delta — totals alone
+    # could be cumulative since boot and pass even if currently stalled.
+    control_cmd '{"cmd":"exec","command":"sh","args":["-c","awk '"'"'/^LOC:/{for(i=2;i<=NF-2;i++)printf \"%s \",$i;print \"\"}'"'"' /proc/interrupts"]}' "$VM_SOCKET" 10
+    local before="$CTRL_RESPONSE"
+    sleep 3
+    control_cmd '{"cmd":"exec","command":"sh","args":["-c","awk '"'"'/^LOC:/{for(i=2;i<=NF-2;i++)printf \"%s \",$i;print \"\"}'"'"' /proc/interrupts"]}' "$VM_SOCKET" 10
+    local after="$CTRL_RESPONSE"
+
+    # Extract first integer per response — a 0-tick delta on any vCPU = stall.
+    local b a
+    b=$(echo "$before" | grep -oE '"stdout":"[^"]+"' | head -1 | grep -oE '[0-9]+ +[0-9]+' | head -1 || echo "")
+    a=$(echo "$after"  | grep -oE '"stdout":"[^"]+"' | head -1 | grep -oE '[0-9]+ +[0-9]+' | head -1 || echo "")
+
+    if [ -z "$b" ] || [ -z "$a" ]; then
+        fail "test_timer_ticks: failed to read LOC counters" "before=$before after=$after"
+        stop_vm
+        return
+    fi
+
+    # Delta per CPU.
+    local b0 b1 a0 a1
+    b0=$(echo "$b" | awk '{print $1}')
+    b1=$(echo "$b" | awk '{print $2}')
+    a0=$(echo "$a" | awk '{print $1}')
+    a1=$(echo "$a" | awk '{print $2}')
+    local d0=$((a0 - b0)) d1=$((a1 - b1))
+
+    if [ "$d0" -gt 10 ] && [ "$d1" -gt 10 ]; then
+        pass "LAPIC timer firing on both vCPUs (Δ cpu0=$d0 cpu1=$d1 in 3s)"
+    else
+        fail "LAPIC timer starvation (Δ cpu0=$d0 cpu1=$d1 in 3s — under-delivered)"
+    fi
+
+    stop_vm
+}
+
+# ══════════════════════════════════════════════════════════════════════════
 # Main runner
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -1469,6 +1665,10 @@ ALL_TESTS=(
     test_guest_networking
     test_exec_latency
     test_cow_rootfs
+    test_agent_heartbeat
+    test_serial_login_prompt
+    test_boot_determinism
+    test_timer_ticks
 )
 
 main() {
