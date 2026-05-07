@@ -160,7 +160,12 @@ jobs:
               # Re-glue the rest of the line as the lint name (handles
               # any trailing whitespace).
               $1=""; sub(/^ +/,"")
-              printf "| `%s` | %d |\n", $0, count
+              # <code> instead of Markdown backticks: the categories
+              # output is later substituted via the dollar-double-
+              # braces syntax into a shell run block, so backticks in
+              # the value would re-evaluate as command substitutions
+              # and the cell would render empty.
+              printf "| <code>%s</code> | %d |\n", $0, count
             }' /tmp/top_lints.tsv
             echo "MARKDOWN_EOF"
           } >> "$GITHUB_OUTPUT"
