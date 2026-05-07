@@ -1,14 +1,28 @@
 name: Lint extras
 
-# Shift-left guards beyond the per-PR fmt+clippy:
-#   - miri runs unit tests under the experimental Rust interpreter to catch
-#     undefined behaviour in our `unsafe` blocks (vsock packet parsing, MMIO
-#     descriptor walks, /dev/mem mappings).
-#   - clippy-strict runs a curated set of pedantic/correctness lints in
-#     advisory mode (continue-on-error) so contributors see signal without
-#     blocking landing.
-# Both jobs run on push to master and on pull_request — non-blocking; the
-# main `build.yml` workflow stays the merge gate.
+# Shift-left guards beyond the per-PR fmt + clippy in build.yml:
+#
+#   - clippy-curated  (BLOCKING):
+#       A small hand-picked subset of pedantic / correctness lints that
+#       currently have zero violations in this codebase. We hard-deny
+#       them so the count cannot regress upward without an explicit
+#       fix. Keep this set small and 0-violation; promote individual
+#       lints into it once they are clean.
+#
+#   - clippy-strict   (advisory, continue-on-error):
+#       Full clippy::pedantic + clippy::nursery as warnings. Surfaces
+#       potential issues for contributors without blocking the merge
+#       gate. Ratchet items out of here into clippy-curated as they
+#       go to zero.
+#
+#   - coverage        (BLOCKING per file in coverage-floor.txt):
+#       cargo-llvm-cov runs the workspace, then we compare per-file
+#       line coverage against the floors checked in at
+#       .github/coverage-floor.txt. Any listed file dropping below its
+#       floor fails the job. Files not in the list are unconstrained.
+#
+# A Miri job is intentionally absent — see the comment block above
+# the clippy-curated job for the reason and the exit criterion.
 
 on:
   push:
@@ -29,9 +43,36 @@ concurrency:
 jobs:
   # NOTE: a Miri job belongs here too, but the workspace root crate is
   # binary-only (no [lib] target) and the leaf crates' tests use libc /
-  # KVM ioctls that Miri can't model. Re-enable once we extract pure-logic
-  # parsers (vsock packet header, virtio descriptors, kernel cmdline) into
-  # a lib crate that Miri can run end-to-end.
+  # KVM ioctls that Miri cannot model. The roadmap is to extract
+  # pure-logic parsers (vsock packet header, virtio descriptors,
+  # kernel cmdline, control-plane protocol framing) into a separate
+  # `lib` crate — once they live in their own crate Miri can run
+  # against them end-to-end. Tracked in docs/SPEC.md under Needs Work.
+
+  clippy-curated:
+    name: Clippy (curated zero-violation set, blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Curated correctness lints (deny)
+        # Each of these currently reports 0 violations in this tree.
+        # Adding one to the set means the codebase is clean for that
+        # lint at the time of promotion; future PRs cannot reintroduce
+        # the pattern without touching the lint config.
+        run: |
+          cargo clippy --all-targets -- \
+            -D clippy::cloned_instead_of_copied \
+            -D clippy::imprecise_flops \
+            -D clippy::large_types_passed_by_value \
+            -D clippy::lossy_float_literal \
+            -D clippy::manual_assert \
+            -D clippy::rest_pat_in_fully_bound_structs \
+            -D clippy::unnested_or_patterns \
+            -D clippy::verbose_file_reads
 
   clippy-strict:
     name: Clippy (advisory pedantic + nursery)
@@ -47,9 +88,8 @@ jobs:
         run: cargo clippy --all-targets -- -W clippy::pedantic -W clippy::nursery
 
   coverage:
-    name: Coverage report (advisory)
+    name: Coverage report (per-file ratchet, blocking)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -71,25 +111,45 @@ jobs:
             lcov.info
             coverage-summary.txt
           retention-days: 14
-      - name: Enforce floor on critical files
-        # The shift-left bug-class targets: serial flush, vsock device
-        # parsing, agent listener channel handling. Set a soft floor so the
-        # coverage trend is visible; advisory only for now.
+      - name: Enforce per-file ratchet floor
+        # Reads .github/coverage-floor.txt and fails if any listed file
+        # has dropped below its recorded floor. Floors only ratchet up:
+        # when a PR genuinely raises coverage, the same PR raises the
+        # floor and the new level becomes the new minimum.
         run: |
           set -euo pipefail
-          floor=60
-          for path in \
-              src/vmm/serial.rs \
-              src/virtio/vsock.rs \
-              src/vmm/agent_listener.rs; do
-            pct=$(cargo llvm-cov report --lcov 2>/dev/null \
-                   | awk -v f="$path" 'BEGIN{cov=0;tot=0} \
-                       /^SF:/ && index($0,f){match=1; next} \
-                       match && /^DA:/ {tot++; split($0,a,","); if (a[2]+0>0) cov++} \
-                       match && /^end_of_record/ {exit} \
-                       END{ if (tot==0) print 0; else printf "%d", cov*100/tot }') || pct=0
-            echo "  $path: ${pct}% (floor=${floor}%)"
+          floor_file=.github/coverage-floor.txt
+          fail=0
+          while IFS=$'\t' read -r path floor; do
+            case "$path" in ''|'#'*) continue ;; esac
+            [ -z "${floor:-}" ] && continue
+            pct=$(awk -v f="$path" '
+              BEGIN { inside=0; cov=0; tot=0 }
+              /^SF:/ {
+                if (index($0, f) > 0) { inside = 1 } else { inside = 0 }
+                next
+              }
+              inside == 1 && /^DA:/ {
+                tot = tot + 1
+                split($0, a, ",")
+                if (a[2] + 0 > 0) { cov = cov + 1 }
+              }
+              inside == 1 && /^end_of_record/ { exit }
+              END {
+                if (tot == 0) { print 0 } else { printf "%d", cov*100/tot }
+              }
+            ' lcov.info)
+            pct=${pct:-0}
             if [ "$pct" -lt "$floor" ]; then
-              echo "::warning::$path coverage ${pct}% < ${floor}% (advisory)"
+              echo "::error file=$path::coverage ${pct}% < floor ${floor}%"
+              fail=1
+            else
+              echo "  $path: ${pct}% (floor=${floor}%, +$((pct-floor)))"
             fi
-          done
+          done < "$floor_file"
+          if [ "$fail" -eq 1 ]; then
+            echo "Coverage ratchet failed. Either raise tests, or, if a"
+            echo "file's coverage genuinely went up, update its floor in"
+            echo ".github/coverage-floor.txt in the same PR."
+            exit 1
+          fi

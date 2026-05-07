@@ -1,0 +1,23 @@
+# Per-file line-coverage floor for ratchet enforcement.
+#
+# Format: <path><TAB><min_percent>
+# Lines starting with '#' and blank lines are ignored.
+#
+# Rules:
+#   - Coverage CI job (lint-extra.yml) FAILS if any listed file drops
+#     below its floor.
+#   - Floors only ratchet UP. When a PR genuinely raises a file's
+#     coverage, update the floor in the same PR so the new level
+#     becomes the new minimum and prevents future regression.
+#   - Files not listed here are unconstrained — add a path the first
+#     time you ship meaningful tests for it.
+#
+# Current floors were captured at branch fc7c4e6 (post per-bug-class
+# unit tests). The values reflect the present measurement minus a
+# small safety margin to absorb measurement noise without false
+# positives.
+src/vmm/serial.rs	67
+src/virtio/vsock.rs	34
+src/vmm/agent_listener.rs	17
+src/control/protocol.rs	94
+src/virtio/block.rs	62
