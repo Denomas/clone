@@ -512,6 +512,62 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  package:
+    name: Container image
+    runs-on: ubuntu-latest
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tags: ${{ steps.meta.outputs.tags }}
+      image_digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download x86_64 binary
+        uses: actions/download-artifact@v8
+        with:
+          name: clone-linux-x86_64
+          path: ./pkg
+      - name: Make binary executable
+        run: chmod +x ./pkg/clone
+      - uses: docker/setup-buildx-action@v3
+      - name: Lower-case repo for GHCR
+        # GHCR requires lower-case image names. github.repository can
+        # have mixed case (e.g. Denomas/clone) so normalise here.
+        id: repo
+        run: |
+          echo "name=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.repo.outputs.name }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Login to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build (and optionally push) container
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./pkg
+          file: ./Dockerfile
+          # On PRs we only validate the Dockerfile (push: false). On
+          # pushes to master we publish to ghcr.io with both the
+          # short-SHA and `latest` tags. Forks / non-master branches
+          # never push because metadata-action only emits the latest
+          # tag when the branch is the default one.
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
   dco:
     name: DCO check (advisory)
     runs-on: ubuntu-latest
@@ -568,7 +624,7 @@ jobs:
   summary:
     name: PR summary (CI build)
     runs-on: ubuntu-latest
-    needs: [changes, fmt, clippy, build, msrv, deny, security, dco]
+    needs: [changes, fmt, clippy, build, msrv, deny, security, dco, package]
     if: always()
     permissions:
       contents: read
@@ -671,6 +727,7 @@ jobs:
             echo "deny_dur=$(lookup 'Dependency check')"
             echo "security_dur=$(lookup 'Security audit')"
             echo "dco_dur=$(lookup 'DCO check (advisory)')"
+            echo "pkg_dur=$(lookup 'Container image')"
             echo "billable_min=$billable_min"
           } >> "$GITHUB_OUTPUT"
 
@@ -799,6 +856,7 @@ jobs:
           deny_r="${{ needs.deny.result }}"
           security_r="${{ needs.security.result }}"
           dco_r="${{ needs.dco.result }}"
+          pkg_r="${{ needs.package.result }}"
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
@@ -852,6 +910,9 @@ jobs:
             echo "| Security audit   | $(icon $security_r) \`$security_r\` | $(fmt_dur ${{ steps.timing.outputs.security_dur }}) |"
             if [ "$dco_r" != "" ] && [ "$dco_r" != "skipped" ]; then
               echo "| DCO check        | $(icon $dco_r) \`$dco_r\` | $(fmt_dur ${{ steps.timing.outputs.dco_dur }}) |"
+            fi
+            if [ "$pkg_r" != "" ] && [ "$pkg_r" != "skipped" ]; then
+              echo "| Container image  | $(icon $pkg_r) \`$pkg_r\` | $(fmt_dur ${{ steps.timing.outputs.pkg_dur }}) |"
             fi
             echo
             if [ "$build_r" = "success" ]; then
@@ -968,6 +1029,7 @@ jobs:
           chD=$(class_for "${{ needs.deny.result }}")
           chS=$(class_for "${{ needs.security.result }}")
           chDco=$(class_for "${{ needs.dco.result }}")
+          chPkg=$(class_for "${{ needs.package.result }}")
           {
             echo
             echo "## CI flow"
@@ -985,6 +1047,7 @@ jobs:
             echo "    deny[Dependency check]:::$chD"
             echo "    security[Security audit]:::$chS"
             echo "    dco[DCO advisory]:::$chDco"
+            echo "    pkg[Container image]:::$chPkg"
             echo '    summary[PR summary]'
             echo '    changes --> fmt'
             echo '    changes --> clippy'
@@ -993,6 +1056,7 @@ jobs:
             echo '    changes --> deny'
             echo '    changes --> security'
             echo '    changes --> dco'
+            echo '    build --> pkg'
             echo '    fmt --> summary'
             echo '    clippy --> summary'
             echo '    build --> summary'
@@ -1000,6 +1064,7 @@ jobs:
             echo '    deny --> summary'
             echo '    security --> summary'
             echo '    dco --> summary'
+            echo '    pkg --> summary'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
