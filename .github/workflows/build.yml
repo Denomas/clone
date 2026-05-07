@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  checks: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -122,6 +123,11 @@ jobs:
       cache_hit: ${{ steps.cache.outputs.cache-hit }}
       per_binary: ${{ steps.test_metrics.outputs.per_binary }}
       slowest_tests: ${{ steps.test_metrics.outputs.slowest_tests }}
+      rustc_v: ${{ steps.toolchain.outputs.rustc }}
+      cargo_v: ${{ steps.toolchain.outputs.cargo }}
+      nextest_v: ${{ steps.toolchain.outputs.nextest }}
+      build_warnings: ${{ steps.build_warn.outputs.warnings }}
+      fail_trace: ${{ steps.test_metrics.outputs.fail_trace }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -136,7 +142,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build (static musl)
-        run: cargo build --release --target x86_64-unknown-linux-musl
+        # tee the build log so the next step can count rustc warnings.
+        # CARGO_TERM_COLOR=never keeps the log ANSI-free for grep.
+        env:
+          CARGO_TERM_COLOR: never
+        run: cargo build --release --target x86_64-unknown-linux-musl 2>&1 | tee /tmp/build.log
+
+      - name: Count compile warnings
+        id: build_warn
+        if: always()
+        # rustc emits "warning:" for every diagnostic; an empty log
+        # (failure earlier) is reported as 0 so the dashboard column
+        # still renders.
+        run: |
+          n=$(grep -cE '^warning:' /tmp/build.log 2>/dev/null || echo 0)
+          echo "warnings=$n" >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-nextest
         # nextest gives us per-test timing on every run, which lets the
@@ -145,6 +165,21 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+
+      - name: Capture toolchain versions
+        id: toolchain
+        # Surface the exact rustc / cargo / nextest used by this build
+        # into the dashboard sticky so reviewers can correlate any
+        # unexpected behaviour with toolchain drift between runs.
+        run: |
+          rustc=$(rustc -V 2>/dev/null | sed 's/^rustc //')
+          cargo=$(cargo -V 2>/dev/null | sed 's/^cargo //')
+          nextest=$(cargo nextest --version 2>/dev/null | head -1 | awk '{print $2}')
+          {
+            echo "rustc=$rustc"
+            echo "cargo=$cargo"
+            echo "nextest=$nextest"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Unit tests (nextest)
         # --status-level all prints one line per test ("PASS [   X.XXXs]
@@ -213,6 +248,15 @@ jobs:
             | head -10 \
             > /tmp/slowest.tsv
 
+          # Failure-trace block: when nextest reports failed tests it
+          # appends a "failures:" section after the summary line with
+          # one block per test (header + STDOUT/STDERR captures).
+          # Capture from that marker to EOF, capped at 200 lines so a
+          # giant panic dump doesn't blow past the output limit.
+          awk '/^failures:$/{flag=1} flag{print}' /tmp/test.log \
+            | head -200 \
+            > /tmp/fail_trace.txt
+
           {
             echo "tests_total=$line_total"
             echo "tests_passed=$line_pass"
@@ -226,7 +270,32 @@ jobs:
             echo "slowest_tests<<MARKDOWN_EOF"
             awk -F'\t' '{printf "| <code>%ss</code> | <code>%s</code> | <code>%s</code> |\n", $1, $2, $3}' /tmp/slowest.tsv
             echo "MARKDOWN_EOF"
+            echo "fail_trace<<TRACE_EOF"
+            cat /tmp/fail_trace.txt
+            echo "TRACE_EOF"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Publish JUnit annotations
+        # Renders pass/fail counts as a check and emits inline file:line
+        # annotations on the diff for any failed tests, sourced from
+        # nextest's JUnit XML report (.config/nextest.toml configures
+        # the default profile to write target/nextest/default/junit.xml).
+        # always() so we publish results even when nextest exits non-zero.
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: target/nextest/default/junit.xml
+          check_name: Test results (nextest)
+          comment_mode: off
+          job_summary: false
+
+      - name: Upload JUnit XML
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-nextest
+          path: target/nextest/default/junit.xml
+          retention-days: 14
 
       - name: Smoke test binary
         run: |
@@ -393,10 +462,63 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  dco:
+    name: DCO check (advisory)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name == 'pull_request'
+    outputs:
+      missing: ${{ steps.dco.outputs.missing }}
+      summary_md: ${{ steps.dco.outputs.summary_md }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify Signed-off-by trailer
+        id: dco
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        # Walk every commit unique to this PR and check for a
+        # Signed-off-by trailer matching the commit author. Failures
+        # are reported as a markdown block (via job output) but the
+        # job itself stays green — this is an advisory gate, intended
+        # to surface the contributor's omission without blocking the
+        # PR. Branch protection can promote it to required later.
+        run: |
+          set +e
+          git fetch origin "$BASE_REF" >/dev/null 2>&1
+          missing_count=0
+          : > /tmp/dco-missing.txt
+          while read -r sha; do
+            [ -z "$sha" ] && continue
+            email=$(git show --no-patch --format='%ae' "$sha")
+            if ! git show --no-patch --format='%(trailers:key=Signed-off-by,valueonly=true)' "$sha" \
+                  | grep -qF "<$email>"; then
+              subj=$(git show --no-patch --format='%s' "$sha")
+              printf '%s\t%s\n' "$sha" "$subj" >> /tmp/dco-missing.txt
+              missing_count=$((missing_count + 1))
+            fi
+          done < <(git rev-list "origin/$BASE_REF..HEAD")
+          echo "missing=$missing_count" >> "$GITHUB_OUTPUT"
+          if [ "$missing_count" = "0" ]; then
+            echo "summary_md=" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "summary_md<<DCO_EOF"
+              echo "$missing_count commit(s) missing a matching <code>Signed-off-by:</code> trailer:"
+              echo
+              awk -F'\t' '{printf "- <code>%s</code> %s\n", substr($1,1,7), $2}' /tmp/dco-missing.txt
+              echo
+              echo "Sign off new commits with <code>git commit -s</code>, or amend with"
+              echo "<code>git commit --amend --signoff</code> / <code>git rebase --signoff origin/$BASE_REF</code>."
+              echo "DCO_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
   summary:
     name: PR summary (CI build)
     runs-on: ubuntu-latest
-    needs: [changes, fmt, clippy, build, msrv, deny, security]
+    needs: [changes, fmt, clippy, build, msrv, deny, security, dco]
     if: always()
     permissions:
       contents: read
@@ -480,6 +602,16 @@ jobs:
           lookup() {
             grep -F -- "$1|" /tmp/job_durations.tsv | head -1 | cut -d'|' -f2
           }
+          # Sum all per-job seconds — GHA bills wallclock per job
+          # (rounded up to the minute), so this is the closest we can
+          # come without the post-completion timing API. Round each
+          # job to ceil(s/60) before summing for a billing-style total.
+          billable_sec=$(awk -F'|' '{
+              s=$2; if (s == "" || s+0 == 0) next
+              m = int((s + 59) / 60) * 60
+              total += m
+            } END { print total+0 }' /tmp/job_durations.tsv)
+          billable_min=$((billable_sec / 60))
           {
             echo "changes_dur=$(lookup 'Detect changes')"
             echo "fmt_dur=$(lookup 'Format')"
@@ -488,6 +620,8 @@ jobs:
             echo "msrv_dur=$(lookup 'MSRV check')"
             echo "deny_dur=$(lookup 'Dependency check')"
             echo "security_dur=$(lookup 'Security audit')"
+            echo "dco_dur=$(lookup 'DCO check (advisory)')"
+            echo "billable_min=$billable_min"
           } >> "$GITHUB_OUTPUT"
 
       - name: Fetch base Cargo.lock for diff
@@ -585,6 +719,9 @@ jobs:
 
       - name: Aggregate job results
         id: agg
+        env:
+          FAIL_TRACE: ${{ needs.build.outputs.fail_trace }}
+          DCO_SUMMARY: ${{ needs.dco.outputs.summary_md }}
         run: |
           icon() {
             case "$1" in
@@ -611,6 +748,7 @@ jobs:
           msrv_r="${{ needs.msrv.result }}"
           deny_r="${{ needs.deny.result }}"
           security_r="${{ needs.security.result }}"
+          dco_r="${{ needs.dco.result }}"
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
@@ -640,20 +778,31 @@ jobs:
           adv_count="${{ needs.security.outputs.advisory_count }}"
 
           # Compose markdown body.
+          billable_label="—"
+          if [ -n "${{ steps.timing.outputs.billable_min }}" ] && [ "${{ steps.timing.outputs.billable_min }}" != "0" ]; then
+            billable_label="${{ steps.timing.outputs.billable_min }}m (billable)"
+          fi
           {
             echo "## CI · Build & Test — \`$sha_short\`"
             echo
-            echo "Run: [#${{ github.run_number }}]($run_url) · cache: $cache_label"
+            echo "Run: [#${{ github.run_number }}]($run_url) · cache: $cache_label · runtime: $billable_label"
             echo
+            if [ -n "${{ needs.build.outputs.rustc_v }}" ]; then
+              echo "**Toolchain:** rustc <code>${{ needs.build.outputs.rustc_v }}</code> · cargo <code>${{ needs.build.outputs.cargo_v }}</code> · nextest <code>${{ needs.build.outputs.nextest_v }}</code>"
+              echo
+            fi
             echo "| Job | Result | Duration |"
             echo "|---|---|---:|"
-            echo "| Detect changes  | $(icon $changes_r) \`$changes_r\` | $(fmt_dur ${{ steps.timing.outputs.changes_dur }}) |"
-            echo "| Format          | $(icon $fmt_r) \`$fmt_r\` | $(fmt_dur ${{ steps.timing.outputs.fmt_dur }}) |"
-            echo "| Clippy          | $(icon $clippy_r) \`$clippy_r\` | $(fmt_dur ${{ steps.timing.outputs.clippy_dur }}) |"
-            echo "| Build & Test    | $(icon $build_r) \`$build_r\` | $(fmt_dur ${{ steps.timing.outputs.build_dur }}) |"
-            echo "| MSRV check      | $(icon $msrv_r) \`$msrv_r\` | $(fmt_dur ${{ steps.timing.outputs.msrv_dur }}) |"
-            echo "| Dependency check| $(icon $deny_r) \`$deny_r\` | $(fmt_dur ${{ steps.timing.outputs.deny_dur }}) |"
-            echo "| Security audit  | $(icon $security_r) \`$security_r\` | $(fmt_dur ${{ steps.timing.outputs.security_dur }}) |"
+            echo "| Detect changes   | $(icon $changes_r) \`$changes_r\` | $(fmt_dur ${{ steps.timing.outputs.changes_dur }}) |"
+            echo "| Format           | $(icon $fmt_r) \`$fmt_r\` | $(fmt_dur ${{ steps.timing.outputs.fmt_dur }}) |"
+            echo "| Clippy           | $(icon $clippy_r) \`$clippy_r\` | $(fmt_dur ${{ steps.timing.outputs.clippy_dur }}) |"
+            echo "| Build & Test     | $(icon $build_r) \`$build_r\` | $(fmt_dur ${{ steps.timing.outputs.build_dur }}) |"
+            echo "| MSRV check       | $(icon $msrv_r) \`$msrv_r\` | $(fmt_dur ${{ steps.timing.outputs.msrv_dur }}) |"
+            echo "| Dependency check | $(icon $deny_r) \`$deny_r\` | $(fmt_dur ${{ steps.timing.outputs.deny_dur }}) |"
+            echo "| Security audit   | $(icon $security_r) \`$security_r\` | $(fmt_dur ${{ steps.timing.outputs.security_dur }}) |"
+            if [ "$dco_r" != "" ] && [ "$dco_r" != "skipped" ]; then
+              echo "| DCO check        | $(icon $dco_r) \`$dco_r\` | $(fmt_dur ${{ steps.timing.outputs.dco_dur }}) |"
+            fi
             echo
             if [ "$build_r" = "success" ]; then
               echo "**Tests:** ${{ needs.build.outputs.tests_passed }} passed${tests_delta} · ${{ needs.build.outputs.tests_failed }} failed · ${{ needs.build.outputs.tests_ignored }} ignored · ${{ needs.build.outputs.tests_filtered }} filtered out (in ${{ needs.build.outputs.tests_duration }})"
@@ -675,8 +824,30 @@ jobs:
               echo "</details>"
               echo
               echo "**Binary:** \`target/x86_64-unknown-linux-musl/release/clone\` — ${{ needs.build.outputs.binary_size_human }}${size_delta} ([download artifact]($run_url#artifacts))"
+              warn_n="${{ needs.build.outputs.build_warnings }}"
+              if [ -n "$warn_n" ] && [ "$warn_n" != "0" ]; then
+                echo
+                echo "**Compile warnings:** \`$warn_n\` (see Build & Test job log)"
+              fi
             else
               echo "_Build & Test did not finish successfully; see job log for details._"
+              if [ -n "$FAIL_TRACE" ]; then
+                echo
+                echo "<details><summary>Failure trace (first 200 lines)</summary>"
+                echo
+                echo '```'
+                printf '%s\n' "$FAIL_TRACE"
+                echo '```'
+                echo
+                echo "</details>"
+              fi
+            fi
+
+            if [ -n "$DCO_SUMMARY" ]; then
+              echo
+              echo "### DCO check (advisory)"
+              echo
+              printf '%s\n' "$DCO_SUMMARY"
             fi
 
             if [ "$adv_count" != "0" ] && [ -n "$adv_count" ]; then
@@ -736,6 +907,7 @@ jobs:
           chM=$(class_for "${{ needs.msrv.result }}")
           chD=$(class_for "${{ needs.deny.result }}")
           chS=$(class_for "${{ needs.security.result }}")
+          chDco=$(class_for "${{ needs.dco.result }}")
           {
             echo
             echo "## CI flow"
@@ -752,6 +924,7 @@ jobs:
             echo "    msrv[MSRV check]:::$chM"
             echo "    deny[Dependency check]:::$chD"
             echo "    security[Security audit]:::$chS"
+            echo "    dco[DCO advisory]:::$chDco"
             echo '    summary[PR summary]'
             echo '    changes --> fmt'
             echo '    changes --> clippy'
@@ -759,12 +932,14 @@ jobs:
             echo '    changes --> msrv'
             echo '    changes --> deny'
             echo '    changes --> security'
+            echo '    changes --> dco'
             echo '    fmt --> summary'
             echo '    clippy --> summary'
             echo '    build --> summary'
             echo '    msrv --> summary'
             echo '    deny --> summary'
             echo '    security --> summary'
+            echo '    dco --> summary'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
