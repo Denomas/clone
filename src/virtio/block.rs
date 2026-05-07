@@ -617,7 +617,6 @@ impl VirtioDevice for VirtioBlock {
 mod tests {
     use super::*;
     use crate::storage::detect_format;
-    use std::io::Write as _;
 
     fn make_temp_disk(size: u64) -> (tempfile::NamedTempFile, PathBuf) {
         let f = tempfile::NamedTempFile::new().unwrap();
