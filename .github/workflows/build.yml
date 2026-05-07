@@ -121,6 +121,7 @@ jobs:
       binary_size_human: ${{ steps.bin_size.outputs.size_human }}
       cache_hit: ${{ steps.cache.outputs.cache-hit }}
       per_binary: ${{ steps.test_metrics.outputs.per_binary }}
+      slowest_tests: ${{ steps.test_metrics.outputs.slowest_tests }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -137,49 +138,69 @@ jobs:
       - name: Build (static musl)
         run: cargo build --release --target x86_64-unknown-linux-musl
 
-      - name: Unit tests
-        # CARGO_TERM_COLOR=never so the libtest "test result: ok. N
-        # passed; ..." summary lines are plain text and the counter grep
-        # in 'Parse test metrics' below matches reliably.
+      - name: Install cargo-nextest
+        # nextest gives us per-test timing on every run, which lets the
+        # dashboard render a Top-10 slowest tests table. taiki-e/install
+        # action ships a prebuilt binary so cold start stays fast.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Unit tests (nextest)
+        # --status-level all prints one line per test ("PASS [   X.XXXs]
+        # <binary> <name>") so we can extract per-binary counts AND the
+        # slowest-N table from the same log. CARGO_TERM_COLOR=never keeps
+        # the output ANSI-free for downstream grep/awk parsers.
         env:
           CARGO_TERM_COLOR: never
-        run: cargo test --target x86_64-unknown-linux-musl 2>&1 | tee /tmp/test.log
+        run: cargo nextest run --target x86_64-unknown-linux-musl --status-level all 2>&1 | tee /tmp/test.log
 
       - name: Parse test metrics
         id: test_metrics
         if: always()
         run: |
-          # Sum across every test binary's "test result: ok. N passed;" line.
-          line_total=$(grep -oP 'running \K\d+(?= tests)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
-          line_pass=$(grep -oP '(?<=test result: ok\. )\d+(?= passed)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
-          line_pass_fail=$(grep -oP '(?<=test result: FAILED\. )\d+(?= passed)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
-          line_pass=$(( line_pass + line_pass_fail ))
-          line_fail=$(grep -oP '\d+(?= failed)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
-          line_ignored=$(grep -oP '\d+(?= ignored)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
-          line_filtered=$(grep -oP '\d+(?= filtered out)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
-          duration=$(grep -oP 'finished in \K[0-9.]+s' /tmp/test.log | tail -1)
+          # nextest's final line is:
+          #   "     Summary [   X.XXs] N tests run: P passed (S slow), F failed (L leaky), I skipped"
+          # The "(S slow)" / "(L leaky)" suffixes are optional. We grep for
+          # the keyword tokens individually so optional fragments don't
+          # break the parser.
+          summary=$(grep -E '^[[:space:]]+Summary \[' /tmp/test.log | tail -1)
+          line_total=$(echo "$summary"   | grep -oP '\] \K[0-9]+(?= tests run)' | head -1)
+          line_pass=$(echo "$summary"    | grep -oP '[0-9]+(?= passed)'         | head -1)
+          line_fail=$(echo "$summary"    | grep -oP '[0-9]+(?= failed)'         | head -1)
+          line_ignored=$(echo "$summary" | grep -oP '[0-9]+(?= skipped)'        | head -1)
+          duration=$(echo "$summary"     | grep -oP 'Summary \[\s*\K[0-9.]+s'   | head -1)
+          # nextest doesn't surface the "filtered out" count in its
+          # summary line; default to 0 so the column still renders.
+          line_filtered=0
 
-          # Per-binary breakdown: cargo test prefixes every test binary
-          # block with a 'Running unittests src/main.rs (target/.../<id>)'
-          # or 'Running tests/<file>.rs (target/.../<id>)' line followed
-          # by 'running N tests'. Walk the log in order, emit one row
-          # per binary as 'name|count'.
-          awk '
-            /^[[:space:]]*Running .* \(target/ {
-              # Pull the binary basename out of the parenthesised path,
-              # then strip the trailing -<hash>.
-              p = $0
-              sub(/.*\(/, "", p); sub(/\).*/, "", p)
-              n = p; sub(/.*\//, "", n); sub(/-[a-f0-9]+$/, "", n)
-              cur = n
-              next
-            }
-            /^running [0-9]+ tests?$/ && cur != "" {
-              c = $2
-              printf "%s|%d\n", cur, c
-              cur = ""
-            }
-          ' /tmp/test.log > /tmp/per_binary.tsv
+          : "${line_total:=0}" "${line_pass:=0}" "${line_fail:=0}" "${line_ignored:=0}"
+
+          # Per-binary breakdown: every nextest test line is
+          #   "        <STATUS> [   X.XXXs] <binary> <test_name>"
+          # so field 4 (whitespace-separated) is the binary. Count
+          # PASS/FAIL/SKIP lines per binary.
+          grep -E '^[[:space:]]+(PASS|FAIL|SKIP) \[' /tmp/test.log \
+            | awk '{print $4}' \
+            | sort \
+            | uniq -c \
+            | awk '{printf "%s|%d\n", $2, $1}' \
+            > /tmp/per_binary.tsv
+
+          # Top-10 slowest tests: parse the duration token (field 3 once
+          # the closing "]" is stripped) on PASS lines, sort descending,
+          # take the first ten.
+          grep -E '^[[:space:]]+PASS \[' /tmp/test.log \
+            | awk '{
+                t=$3; sub(/s\]/,"",t)
+                bin=$4
+                name=""
+                for(i=5;i<=NF;i++) name=name (i==5?"":" ") $i
+                printf "%s\t%s\t%s\n", t, bin, name
+              }' \
+            | sort -t"$(printf '\t')" -k1 -gr \
+            | head -10 \
+            > /tmp/slowest.tsv
 
           {
             echo "tests_total=$line_total"
@@ -190,6 +211,9 @@ jobs:
             echo "tests_duration=$duration"
             echo "per_binary<<MARKDOWN_EOF"
             awk -F'|' '{printf "| <code>%s</code> | %d |\n", $1, $2}' /tmp/per_binary.tsv
+            echo "MARKDOWN_EOF"
+            echo "slowest_tests<<MARKDOWN_EOF"
+            awk -F'\t' '{printf "| <code>%ss</code> | <code>%s</code> | <code>%s</code> |\n", $1, $2, $3}' /tmp/slowest.tsv
             echo "MARKDOWN_EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -631,6 +655,14 @@ jobs:
               echo
               echo "</details>"
               echo
+              echo "<details><summary>Top 10 slowest tests</summary>"
+              echo
+              echo "| Duration | Binary | Test |"
+              echo "|---|---|---|"
+              echo "${{ needs.build.outputs.slowest_tests }}"
+              echo
+              echo "</details>"
+              echo
               echo "**Binary:** \`target/x86_64-unknown-linux-musl/release/clone\` — ${{ needs.build.outputs.binary_size_human }}${size_delta} ([download artifact]($run_url#artifacts))"
             else
               echo "_Build & Test did not finish successfully; see job log for details._"
@@ -669,6 +701,61 @@ jobs:
 
       - name: Write step summary
         run: cat /tmp/body.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Append CI flow diagram to step summary
+        # Mermaid renders inside $GITHUB_STEP_SUMMARY but is silently
+        # stripped from PR comments, so this only goes to the run's
+        # summary tab. Node fill colour reflects each upstream job's
+        # actual result, giving a one-glance health view of the DAG.
+        if: always()
+        run: |
+          class_for() {
+            case "$1" in
+              success) echo "ok" ;;
+              failure) echo "fail" ;;
+              cancelled) echo "skip" ;;
+              skipped) echo "skip" ;;
+              *) echo "skip" ;;
+            esac
+          }
+          chC=$(class_for "${{ needs.changes.result }}")
+          chF=$(class_for "${{ needs.fmt.result }}")
+          chCl=$(class_for "${{ needs.clippy.result }}")
+          chB=$(class_for "${{ needs.build.result }}")
+          chM=$(class_for "${{ needs.msrv.result }}")
+          chD=$(class_for "${{ needs.deny.result }}")
+          chS=$(class_for "${{ needs.security.result }}")
+          {
+            echo
+            echo "## CI flow"
+            echo
+            echo '```mermaid'
+            echo 'graph TD'
+            echo '    classDef ok fill:#d4edda,stroke:#28a745,color:#155724'
+            echo '    classDef fail fill:#f8d7da,stroke:#dc3545,color:#721c24'
+            echo '    classDef skip fill:#fff3cd,stroke:#856404,color:#856404'
+            echo "    changes[Detect changes]:::$chC"
+            echo "    fmt[Format]:::$chF"
+            echo "    clippy[Clippy]:::$chCl"
+            echo "    build[Build & Test]:::$chB"
+            echo "    msrv[MSRV check]:::$chM"
+            echo "    deny[Dependency check]:::$chD"
+            echo "    security[Security audit]:::$chS"
+            echo '    summary[PR summary]'
+            echo '    changes --> fmt'
+            echo '    changes --> clippy'
+            echo '    changes --> build'
+            echo '    changes --> msrv'
+            echo '    changes --> deny'
+            echo '    changes --> security'
+            echo '    fmt --> summary'
+            echo '    clippy --> summary'
+            echo '    build --> summary'
+            echo '    msrv --> summary'
+            echo '    deny --> summary'
+            echo '    security --> summary'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upsert sticky PR comment
         if: github.event_name == 'pull_request'
