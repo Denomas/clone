@@ -21,6 +21,13 @@ name: Lint extras
 #       .github/coverage-floor.txt. Any listed file dropping below its
 #       floor fails the job. Files not in the list are unconstrained.
 #
+#   - summary         (always-on aggregator):
+#       Composes a single Markdown report from the three jobs above
+#       (curated/advisory clippy counts + per-file coverage with delta
+#       vs floor) and posts it to the PR as a sticky comment under the
+#       header `lint-extras`. Mirrors aggregate status onto branch
+#       protection.
+#
 # A Miri job is intentionally absent — see the comment block above
 # the clippy-curated job for the reason and the exit criterion.
 
@@ -35,6 +42,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -52,6 +60,8 @@ jobs:
   clippy-curated:
     name: Clippy (curated zero-violation set, blocking)
     runs-on: ubuntu-latest
+    outputs:
+      violations: ${{ steps.cnt.outputs.violations }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -72,12 +82,41 @@ jobs:
             -D clippy::manual_assert \
             -D clippy::rest_pat_in_fully_bound_structs \
             -D clippy::unnested_or_patterns \
-            -D clippy::verbose_file_reads
+            -D clippy::verbose_file_reads 2>&1 | tee /tmp/curated.log
+      - name: Count violations
+        id: cnt
+        if: always()
+        run: |
+          v=$(grep -cE "^error: " /tmp/curated.log || true)
+          echo "violations=$v" >> "$GITHUB_OUTPUT"
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Clippy (curated, blocking)"
+            echo
+            echo "Violations: \`${{ steps.cnt.outputs.violations }}\`"
+            echo
+            echo "<details><summary>Lint set</summary>"
+            echo
+            echo '- `cloned_instead_of_copied`'
+            echo '- `imprecise_flops`'
+            echo '- `large_types_passed_by_value`'
+            echo '- `lossy_float_literal`'
+            echo '- `manual_assert`'
+            echo '- `rest_pat_in_fully_bound_structs`'
+            echo '- `unnested_or_patterns`'
+            echo '- `verbose_file_reads`'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   clippy-strict:
     name: Clippy (advisory pedantic + nursery)
     runs-on: ubuntu-latest
     continue-on-error: true
+    outputs:
+      warnings: ${{ steps.cnt.outputs.warnings }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -85,11 +124,30 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Pedantic + nursery (warnings only)
-        run: cargo clippy --all-targets -- -W clippy::pedantic -W clippy::nursery
+        run: cargo clippy --all-targets -- -W clippy::pedantic -W clippy::nursery 2>&1 | tee /tmp/strict.log
+      - name: Count warnings
+        id: cnt
+        if: always()
+        run: |
+          w=$(grep -cE "^warning: " /tmp/strict.log || true)
+          echo "warnings=$w" >> "$GITHUB_OUTPUT"
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Clippy (pedantic + nursery, advisory)"
+            echo
+            echo "Warnings: \`${{ steps.cnt.outputs.warnings }}\`"
+            echo
+            echo "_Ratchet items into the curated set as they go to zero._"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   coverage:
     name: Coverage report (per-file ratchet, blocking)
     runs-on: ubuntu-latest
+    outputs:
+      table_md: ${{ steps.ratchet.outputs.table_md }}
+      total_line: ${{ steps.totals.outputs.total_line }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -101,8 +159,13 @@ jobs:
           tool: cargo-llvm-cov
       - name: Generate LCOV
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
-      - name: Summary
-        run: cargo llvm-cov report --summary-only | tee coverage-summary.txt
+      - name: Workspace summary
+        id: totals
+        run: |
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
+          # Pull the TOTAL row's "lines covered %" (the third 'Cover' column).
+          total_line=$(awk '/^TOTAL/ {print $(NF-1)}' coverage-summary.txt)
+          echo "total_line=${total_line:-n/a}" >> "$GITHUB_OUTPUT"
       - name: Upload report
         uses: actions/upload-artifact@v4
         with:
@@ -116,10 +179,20 @@ jobs:
         # has dropped below its recorded floor. Floors only ratchet up:
         # when a PR genuinely raises coverage, the same PR raises the
         # floor and the new level becomes the new minimum.
+        id: ratchet
         run: |
           set -euo pipefail
           floor_file=.github/coverage-floor.txt
           fail=0
+
+          # Build the markdown table while we walk the floor list, so we
+          # can pass it to the aggregator unchanged.
+          : > /tmp/cov_table.md
+          {
+            echo "| File | Floor | Current | Δ |"
+            echo "|---|---:|---:|---:|"
+          } >> /tmp/cov_table.md
+
           while IFS=$'\t' read -r path floor; do
             case "$path" in ''|'#'*) continue ;; esac
             [ -z "${floor:-}" ] && continue
@@ -140,16 +213,119 @@ jobs:
               }
             ' lcov.info)
             pct=${pct:-0}
+            delta=$((pct - floor))
             if [ "$pct" -lt "$floor" ]; then
               echo "::error file=$path::coverage ${pct}% < floor ${floor}%"
               fail=1
+              icon="❌"
             else
-              echo "  $path: ${pct}% (floor=${floor}%, +$((pct-floor)))"
+              icon="✅"
+              echo "  $path: ${pct}% (floor=${floor}%, +${delta})"
             fi
+            sign=""
+            [ "$delta" -gt 0 ] && sign="+"
+            echo "| \`$path\` | ${floor}% | ${pct}% | ${icon} ${sign}${delta} |" >> /tmp/cov_table.md
           done < "$floor_file"
+
+          # Expose the rendered table to downstream jobs.
+          {
+            echo "table_md<<MARKDOWN_EOF"
+            cat /tmp/cov_table.md
+            echo "MARKDOWN_EOF"
+          } >> "$GITHUB_OUTPUT"
+
           if [ "$fail" -eq 1 ]; then
             echo "Coverage ratchet failed. Either raise tests, or, if a"
             echo "file's coverage genuinely went up, update its floor in"
             echo ".github/coverage-floor.txt in the same PR."
             exit 1
           fi
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Coverage (per-file ratchet)"
+            echo
+            cat /tmp/cov_table.md 2>/dev/null || echo "_Coverage table unavailable; ratchet step did not run._"
+            echo
+            echo "Workspace line coverage: \`${{ steps.totals.outputs.total_line }}\`"
+            echo
+            echo "Full report uploaded as artifact \`coverage-report\` (lcov.info + coverage-summary.txt)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    name: PR summary (Lint extras)
+    runs-on: ubuntu-latest
+    needs: [clippy-curated, clippy-strict, coverage]
+    if: always()
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Compose body
+        id: agg
+        run: |
+          icon() {
+            case "$1" in
+              success) echo "✅" ;;
+              failure) echo "❌" ;;
+              cancelled) echo "🚫" ;;
+              skipped) echo "⏭️" ;;
+              *) echo "❓" ;;
+            esac
+          }
+
+          curated_r="${{ needs.clippy-curated.result }}"
+          strict_r="${{ needs.clippy-strict.result }}"
+          cov_r="${{ needs.coverage.result }}"
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
+
+          {
+            echo "## Lint extras — \`$sha_short\`"
+            echo
+            echo "Run: [#${{ github.run_number }}]($run_url)"
+            echo
+            echo "| Job | Result | Detail |"
+            echo "|---|---|---|"
+            echo "| Clippy curated (blocking) | $(icon $curated_r) \`$curated_r\` | violations: ${{ needs.clippy-curated.outputs.violations }} |"
+            echo "| Clippy advisory (pedantic + nursery) | $(icon $strict_r) \`$strict_r\` | warnings: ${{ needs.clippy-strict.outputs.warnings }} |"
+            echo "| Coverage ratchet (blocking) | $(icon $cov_r) \`$cov_r\` | workspace line: ${{ needs.coverage.outputs.total_line }} |"
+            echo
+            echo "### Coverage by file"
+            echo
+            echo "${{ needs.coverage.outputs.table_md }}"
+            echo
+            echo "Coverage artifact: [coverage-report]($run_url#artifacts)"
+            echo
+            echo "<sub>Updated by \`lint-extra.yml\` · sticky-comment header \`lint-extras\`.</sub>"
+          } > /tmp/body.md
+
+          {
+            echo "body<<MARKDOWN_EOF"
+            cat /tmp/body.md
+            echo "MARKDOWN_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write step summary
+        run: cat /tmp/body.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upsert sticky PR comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: lint-extras
+          message: ${{ steps.agg.outputs.body }}
+
+      - name: Gate on upstream blocking jobs
+        # Curated and coverage are merge gates; advisory may stay
+        # `failure` without blocking thanks to continue-on-error on the
+        # job itself, but a real cancellation propagates.
+        if: |
+          contains(fromJSON('["failure","cancelled"]'), needs.clippy-curated.result) ||
+          contains(fromJSON('["cancelled"]'), needs.clippy-strict.result) ||
+          contains(fromJSON('["failure","cancelled"]'), needs.coverage.result)
+        run: |
+          echo "Blocking lint-extras job did not pass; failing aggregator."
+          exit 1
