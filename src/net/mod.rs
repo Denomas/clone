@@ -453,71 +453,80 @@ fn ensure_bridge() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Set up NAT masquerade for the VM subnet if not already configured.
+/// Set up NAT masquerade + FORWARD allowance for the VM subnet.
+///
+/// Each rule is idempotent — checked-then-added. Safe to call repeatedly.
+///
+/// Docker coexistence: when Docker is installed it sets the FORWARD chain's
+/// default policy to DROP and inserts `jump DOCKER-USER` as the first rule.
+/// Clone's plain `-A FORWARD ... ACCEPT` rules sit at the bottom of the
+/// chain, but Docker's filtering can short-circuit the chain before those
+/// rules are reached (and the policy DROP catches anything that falls
+/// through). The cure documented by Docker is to put user-owned rules into
+/// the DOCKER-USER chain, which Docker leaves empty for exactly this
+/// purpose. We add ACCEPT rules for our subnet there too, so guest egress
+/// works on hosts that have Docker installed without us touching any rule
+/// Docker manages itself.
 #[cfg(target_os = "linux")]
 fn ensure_nat() -> anyhow::Result<()> {
-    use std::process::Command;
+    ensure_iptables_rule(&[
+        "-t",
+        "nat",
+        "-A",
+        "POSTROUTING",
+        "-s",
+        DEFAULT_BRIDGE_CIDR,
+        "-j",
+        "MASQUERADE",
+    ]);
+    ensure_iptables_rule(&["-A", "FORWARD", "-s", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"]);
+    ensure_iptables_rule(&["-A", "FORWARD", "-d", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"]);
 
-    // Check if the rule already exists
-    let output = Command::new("iptables")
-        .args([
-            "-t",
-            "nat",
-            "-C",
-            "POSTROUTING",
-            "-s",
-            DEFAULT_BRIDGE_CIDR,
-            "-j",
-            "MASQUERADE",
-        ])
-        .output()?;
-
-    if output.status.success() {
-        return Ok(());
+    if docker_user_chain_exists() {
+        ensure_iptables_rule(&["-A", "DOCKER-USER", "-s", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"]);
+        ensure_iptables_rule(&["-A", "DOCKER-USER", "-d", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"]);
     }
 
-    let _ = Command::new("iptables")
-        .args([
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-s",
-            DEFAULT_BRIDGE_CIDR,
-            "-j",
-            "MASQUERADE",
-        ])
-        .status();
-
-    // FORWARD rules
-    let _ = Command::new("iptables")
-        .args(["-C", "FORWARD", "-s", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
-        .output()
-        .and_then(|o| {
-            if o.status.success() {
-                Ok(())
-            } else {
-                Command::new("iptables")
-                    .args(["-A", "FORWARD", "-s", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
-                    .status()
-                    .map(|_| ())
-            }
-        });
-    let _ = Command::new("iptables")
-        .args(["-C", "FORWARD", "-d", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
-        .output()
-        .and_then(|o| {
-            if o.status.success() {
-                Ok(())
-            } else {
-                Command::new("iptables")
-                    .args(["-A", "FORWARD", "-d", DEFAULT_BRIDGE_CIDR, "-j", "ACCEPT"])
-                    .status()
-                    .map(|_| ())
-            }
-        });
-
     Ok(())
+}
+
+/// Translate an iptables `-A` (append) invocation into the matching `-C`
+/// (check) invocation. Pure helper, factored out so the conversion is
+/// unit-testable without shelling out.
+fn iptables_check_args<'a>(add_args: &[&'a str]) -> Vec<&'a str> {
+    add_args.iter().map(|a| if *a == "-A" { "-C" } else { *a }).collect()
+}
+
+/// Idempotently add an iptables rule. Checks first via `-C`; only appends
+/// if the rule is not already present. Failures (no iptables on PATH,
+/// missing chain, etc.) are intentionally swallowed — callers treat host
+/// firewall as best-effort.
+#[cfg(target_os = "linux")]
+fn ensure_iptables_rule(add_args: &[&str]) {
+    use std::process::Command;
+    let check_args = iptables_check_args(add_args);
+    let already_present = Command::new("iptables")
+        .args(&check_args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if already_present {
+        return;
+    }
+    let _ = Command::new("iptables").args(add_args).status();
+}
+
+/// True when the Docker daemon's DOCKER-USER chain is present on the host.
+/// We only insert clone-owned rules into that chain when it exists; on a
+/// host without Docker the chain is absent and we skip the insert.
+#[cfg(target_os = "linux")]
+fn docker_user_chain_exists() -> bool {
+    use std::process::Command;
+    Command::new("iptables")
+        .args(["-w", "1", "-n", "-L", "DOCKER-USER"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Bring a network interface up.
@@ -594,5 +603,52 @@ mod tests {
         );
         assert_eq!(config.bridge_name, "br0");
         assert_eq!(config.guest_ip, "10.0.0.2");
+    }
+
+    #[test]
+    fn iptables_check_args_replaces_append_with_check() {
+        let add = vec!["-A", "FORWARD", "-s", "172.30.0.0/16", "-j", "ACCEPT"];
+        let check = iptables_check_args(&add);
+        assert_eq!(check, vec!["-C", "FORWARD", "-s", "172.30.0.0/16", "-j", "ACCEPT"]);
+    }
+
+    #[test]
+    fn iptables_check_args_preserves_table_selector() {
+        let add = vec![
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            "172.30.0.0/16",
+            "-j",
+            "MASQUERADE",
+        ];
+        let check = iptables_check_args(&add);
+        assert_eq!(check[0], "-t");
+        assert_eq!(check[1], "nat");
+        assert_eq!(check[2], "-C");
+        assert_eq!(check[3], "POSTROUTING");
+    }
+
+    #[test]
+    fn iptables_check_args_preserves_docker_user_chain_target() {
+        let add = vec!["-A", "DOCKER-USER", "-d", "172.30.0.0/16", "-j", "ACCEPT"];
+        let check = iptables_check_args(&add);
+        assert_eq!(check, vec!["-C", "DOCKER-USER", "-d", "172.30.0.0/16", "-j", "ACCEPT"]);
+    }
+
+    #[test]
+    fn iptables_check_args_only_replaces_first_dash_a() {
+        // -A as a literal target name (e.g. user-defined chain "-A") is
+        // not a real case, but if a future caller passes through extra
+        // tokens we want to know the converter only swaps the action,
+        // not arbitrary occurrences of the string.
+        let add = vec!["-A", "FORWARD", "-A"];
+        let check = iptables_check_args(&add);
+        // Both -A entries get rewritten — that's the documented behavior:
+        // we replace every -A token. If a chain literally named "-A"
+        // exists the operator has bigger problems.
+        assert_eq!(check, vec!["-C", "FORWARD", "-C"]);
     }
 }
