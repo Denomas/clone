@@ -420,6 +420,17 @@ clone list --no-daemon    # PID, state, vCPUs, RSS for each VM
 - **MSI-X interrupt routing** — stubbed in PCI bus, devices work via legacy INTx. Full MSI-X needed for high-performance passthrough.
 - **SR-IOV / vGPU / mdev** — single device passthrough works, but no virtual function or mediated device support.
 - **Confidential VMs (TDX/SEV)** — no TEE support yet.
+- **Miri-runnable parser library** — today's workspace root is a binary
+  crate (no `lib` target) and the leaf crates' tests touch libc/KVM
+  syscalls that Miri cannot model, so the experimental
+  undefined-behaviour interpreter has nothing to run against. The plan
+  is to extract pure-logic parsers (vsock packet header parser,
+  virtio descriptor walker, kernel cmdline parser, control-plane
+  framing) into their own `lib` crate that imports nothing
+  syscall-flavoured. Once isolated, a Miri job in `lint-extra.yml`
+  can execute their unit tests end-to-end and catch undefined
+  behaviour in our `unsafe` blocks before it ships. Exit criterion:
+  Miri job blocks merges and runs the parser-lib test suite green.
 - **Per-VM network namespace isolation** — today's `--net` mode plumbs
   every VM's TAP device into the host's main network namespace, so all
   guests share one routing table, one conntrack and one netfilter
