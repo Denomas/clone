@@ -44,3 +44,33 @@ repos:
         files: Cargo\.(toml|lock)
         pass_filenames: false
         stages: [pre-push]
+
+  # Conventional Commits enforcement on the commit message itself.
+  # Mirrors the GitHub "Lint meta / Commit messages" job so local
+  # commits fail before push, instead of after CI runs.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.6.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args:
+          - --strict
+          - build
+          - chore
+          - ci
+          - docs
+          - feat
+          - fix
+          - perf
+          - refactor
+          - revert
+          - style
+          - test
+
+  # Markdown lint over docs/ and root MD files. Mirrors the
+  # "Lint meta / Markdown" CI job so doc edits fail fast locally.
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.42.0
+    hooks:
+      - id: markdownlint
+        files: '^(docs/.*\.md|[^/]+\.md)$'

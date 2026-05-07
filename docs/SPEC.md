@@ -1,5 +1,6 @@
 # Clone — Technical Specification
-**Lightweight Linux VMM — Fast VMs with Efficient Resource Sharing**
+
+> Lightweight Linux VMM — Fast VMs with Efficient Resource Sharing
 
 ---
 
@@ -127,20 +128,22 @@ The `rootfs create` command:
 
 The core differentiator. Three layers stacked to minimize physical RAM usage across VMs:
 
-**Layer 1 — Overcommit**
+#### Layer 1 — Overcommit
+
 - Guest RAM allocated via `mmap` with `MAP_NORESERVE` — host only commits pages on first write
 - Physical pages allocated on demand, no upfront reservation
 - A 512MB VM that's only using 80MB costs 80MB of host RAM
 - Host OOM killer as backstop — same model as process memory on Linux
 
-**Layer 2 — KSM (Kernel Same-page Merging)**
+#### Layer 2 — KSM (Kernel Same-page Merging)
+
 - `MADV_MERGEABLE` on all guest memory regions
 - Host kernel scans across all VM pages, deduplicates identical ones
 - 10 VMs running the same kernel + distro = ~1 physical copy of shared pages
 - Passive — no guest cooperation needed, works automatically
 - Amplified by shared rootfs — VMs booting from the same base image share even more
 
-**Layer 3 — Balloon Reclaim (with Hysteresis)**
+#### Layer 3 — Balloon Reclaim (with Hysteresis)
 
 Guest agent monitors activity via vsock and reports to VMM. VMM balloon policy responds with asymmetric timing:
 
