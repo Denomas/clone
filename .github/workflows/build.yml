@@ -25,8 +25,8 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -50,7 +50,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -72,7 +72,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -120,7 +120,7 @@ jobs:
       binary_size: ${{ steps.bin_size.outputs.size }}
       binary_size_human: ${{ steps.bin_size.outputs.size_human }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -134,7 +134,7 @@ jobs:
 
       - name: Unit tests
         # CARGO_TERM_COLOR=never so the libtest "test result: ok. N
-        # passed; …" summary lines are plain text and the counter grep
+        # passed; ..." summary lines are plain text and the counter grep
         # in 'Parse test metrics' below matches reliably.
         env:
           CARGO_TERM_COLOR: never
@@ -144,7 +144,7 @@ jobs:
         id: test_metrics
         if: always()
         run: |
-          # Sum across every test binary's "test result: ok. N passed; …" line.
+          # Sum across every test binary's "test result: ok. N passed;" line.
           line_total=$(grep -oP 'running \K\d+(?= tests)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
           line_pass=$(grep -oP '(?<=test result: ok\. )\d+(?= passed)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
           line_pass_fail=$(grep -oP '(?<=test result: FAILED\. )\d+(?= passed)' /tmp/test.log | awk '{s+=$1} END{print s+0}')
@@ -178,7 +178,7 @@ jobs:
           echo "size_human=$size_human" >> "$GITHUB_OUTPUT"
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: clone-linux-x86_64
           path: target/x86_64-unknown-linux-musl/release/clone
@@ -209,7 +209,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.87
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (MSRV 1.87)
@@ -229,7 +229,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
       - name: Job summary
         if: always()
@@ -246,7 +246,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -332,7 +332,7 @@ jobs:
 
       - name: Upsert sticky PR comment
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           header: ci-build
           message: ${{ steps.agg.outputs.body }}

@@ -63,7 +63,7 @@ jobs:
     outputs:
       violations: ${{ steps.cnt.outputs.violations }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -118,14 +118,14 @@ jobs:
     outputs:
       warnings: ${{ steps.cnt.outputs.warnings }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Pedantic + nursery (warnings only)
         # --color never strips ANSI escapes so the warning-counter grep
-        # below matches '^warning: …' lines reliably regardless of the
+        # below matches '^warning: ...' lines reliably regardless of the
         # workflow-level CARGO_TERM_COLOR setting.
         run: cargo clippy --all-targets --color never -- -W clippy::pedantic -W clippy::nursery 2>&1 | tee /tmp/strict.log
       - name: Count warnings
@@ -152,7 +152,7 @@ jobs:
       table_md: ${{ steps.ratchet.outputs.table_md }}
       total_line: ${{ steps.totals.outputs.total_line }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -174,7 +174,7 @@ jobs:
                        | grep -oE '[0-9.]+%' | sed -n '3p')
           echo "total_line=${total_line:-n/a}" >> "$GITHUB_OUTPUT"
       - name: Upload report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: |
@@ -232,9 +232,10 @@ jobs:
             sign=""
             [ "$delta" -gt 0 ] && sign="+"
             # Use <code> instead of Markdown backticks: the table_md
-            # output is later expanded via ${{ … }} into a shell run
-            # block, so any backtick in the value would be re-evaluated
-            # as a command substitution and the cell would render empty.
+            # output is later expanded via the dollar-double-braces
+            # syntax into a shell run block, so any backtick in the
+            # value would be re-evaluated as a command substitution
+            # and the cell would render empty.
             echo "| <code>$path</code> | ${floor}% | ${pct}% | ${icon} ${sign}${delta} |" >> /tmp/cov_table.md
           done < "$floor_file"
 
@@ -324,7 +325,7 @@ jobs:
 
       - name: Upsert sticky PR comment
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           header: lint-extras
           message: ${{ steps.agg.outputs.body }}
