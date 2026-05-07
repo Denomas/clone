@@ -40,7 +40,10 @@ jobs:
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git fetch origin "$BASE_REF" --depth=0
+          # actions/checkout@v6 above already clones full history
+          # (fetch-depth: 0); we only need the base ref locally so
+          # commitlint can resolve the "from" symbol.
+          git fetch origin "$BASE_REF"
           npx commitlint \
             --from "origin/$BASE_REF" \
             --to "${{ github.event.pull_request.head.sha }}" \
