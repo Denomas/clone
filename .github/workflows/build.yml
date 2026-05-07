@@ -78,6 +78,12 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: cargo clippy -- -D warnings
+        # CARGO_TERM_COLOR=always at the workflow level wraps every
+        # 'warning:'/'error:' marker in ANSI escapes, which breaks the
+        # 'grep -E "^warning:"' counter below. Disable color for this
+        # one step so the log is plain text.
+        env:
+          CARGO_TERM_COLOR: never
         run: cargo clippy -- -D warnings 2>&1 | tee /tmp/clippy.log
       - name: Count warnings/errors
         id: clippy_count
@@ -127,6 +133,11 @@ jobs:
         run: cargo build --release --target x86_64-unknown-linux-musl
 
       - name: Unit tests
+        # CARGO_TERM_COLOR=never so the libtest "test result: ok. N
+        # passed; …" summary lines are plain text and the counter grep
+        # in 'Parse test metrics' below matches reliably.
+        env:
+          CARGO_TERM_COLOR: never
         run: cargo test --target x86_64-unknown-linux-musl 2>&1 | tee /tmp/test.log
 
       - name: Parse test metrics

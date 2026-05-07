@@ -124,7 +124,10 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Pedantic + nursery (warnings only)
-        run: cargo clippy --all-targets -- -W clippy::pedantic -W clippy::nursery 2>&1 | tee /tmp/strict.log
+        # --color never strips ANSI escapes so the warning-counter grep
+        # below matches '^warning: …' lines reliably regardless of the
+        # workflow-level CARGO_TERM_COLOR setting.
+        run: cargo clippy --all-targets --color never -- -W clippy::pedantic -W clippy::nursery 2>&1 | tee /tmp/strict.log
       - name: Count warnings
         id: cnt
         if: always()
@@ -163,8 +166,12 @@ jobs:
         id: totals
         run: |
           cargo llvm-cov report --summary-only | tee coverage-summary.txt
-          # Pull the TOTAL row's "lines covered %" (the third 'Cover' column).
-          total_line=$(awk '/^TOTAL/ {print $(NF-1)}' coverage-summary.txt)
+          # The TOTAL row has 12 numeric columns plus the leading label:
+          # Regions Missed Cover% Functions Missed Cover% Lines Missed
+          # Cover% Branches Missed Cover%. We want the line coverage
+          # percent, which is the third '%' value — pick it via grep.
+          total_line=$(awk '/^TOTAL/ {print}' coverage-summary.txt \
+                       | grep -oE '[0-9.]+%' | sed -n '3p')
           echo "total_line=${total_line:-n/a}" >> "$GITHUB_OUTPUT"
       - name: Upload report
         uses: actions/upload-artifact@v4
@@ -224,7 +231,11 @@ jobs:
             fi
             sign=""
             [ "$delta" -gt 0 ] && sign="+"
-            echo "| \`$path\` | ${floor}% | ${pct}% | ${icon} ${sign}${delta} |" >> /tmp/cov_table.md
+            # Use <code> instead of Markdown backticks: the table_md
+            # output is later expanded via ${{ … }} into a shell run
+            # block, so any backtick in the value would be re-evaluated
+            # as a command substitution and the cell would render empty.
+            echo "| <code>$path</code> | ${floor}% | ${pct}% | ${icon} ${sign}${delta} |" >> /tmp/cov_table.md
           done < "$floor_file"
 
           # Expose the rendered table to downstream jobs.
