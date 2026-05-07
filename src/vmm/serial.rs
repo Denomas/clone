@@ -439,4 +439,60 @@ mod tests {
         let mut serial = Serial::new();
         assert_eq!(serial.read(0), 0);
     }
+
+    // --- Output history (Bug #2 regression guard) ----------------------
+
+    #[test]
+    fn test_history_records_each_data_write() {
+        let mut serial = Serial::new();
+        for &b in b"clone login: " {
+            serial.write(0, b);
+        }
+        let history = serial.snapshot_history();
+        assert_eq!(history, b"clone login: ");
+    }
+
+    #[test]
+    fn test_history_does_not_record_dlab_writes() {
+        // Divisor latch writes go to the data register address (offset 0)
+        // when DLAB is set — those are configuration, not guest output,
+        // and must not show up in history (would corrupt the replay).
+        let mut serial = Serial::new();
+        serial.write(3, 0x80); // LCR: DLAB=1
+        serial.write(0, 0x01); // divisor low
+        serial.write(1, 0x00); // divisor high
+        serial.write(3, 0x00); // LCR: DLAB=0
+        for &b in b"hi" {
+            serial.write(0, b);
+        }
+        assert_eq!(serial.snapshot_history(), b"hi");
+    }
+
+    #[test]
+    fn test_history_caps_and_drops_oldest() {
+        // HISTORY_CAP is 8 KiB. Push 16 KiB and confirm the buffer stays
+        // capped and contains the most recent bytes (the boot banner that
+        // was just printed before a `clone attach`, not the early kernel
+        // chatter that's already off-screen).
+        let mut serial = Serial::new();
+        // 8192 'A' bytes (fills cap)
+        for _ in 0..8192 {
+            serial.write(0, b'A');
+        }
+        // Then 8192 'B' bytes (should evict every 'A')
+        for _ in 0..8192 {
+            serial.write(0, b'B');
+        }
+        let history = serial.snapshot_history();
+        assert_eq!(history.len(), 8192);
+        assert!(history.iter().all(|&b| b == b'B'));
+    }
+
+    #[test]
+    fn test_history_capacity_constant() {
+        // Sanity-check the constant — if someone bumps it, they should
+        // read this comment first: too small and the boot banner won't
+        // fit before login: prints; too large is mostly a memory cost.
+        assert_eq!(HISTORY_CAP, 8 * 1024);
+    }
 }

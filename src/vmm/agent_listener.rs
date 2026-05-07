@@ -511,3 +511,70 @@ fn send_vmm_message(fd: i32, msg: &VmmMessage) -> Result<(), ()> {
         Err(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_agent_state_starts_disconnected() {
+        let state = AgentState::new();
+        assert!(!state.connected.load(Ordering::Acquire));
+        assert!(state.client_fd.lock().unwrap().is_none());
+        assert!(!state.exec_in_progress.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn test_send_exec_returns_error_when_agent_not_connected() {
+        // The control socket dispatch path calls send_exec on every Exec
+        // command. If the agent never connected (e.g. boot wedged before
+        // vsock came up), we must return a clean error string instead of
+        // panicking on a None unwrap.
+        let state = AgentState::new();
+        let result = state.send_exec("/bin/true", &[]);
+        match result {
+            Err(msg) => assert!(msg.contains("not connected"), "unexpected error message: {msg}"),
+            Ok(_) => panic!("send_exec must fail when fd is None"),
+        }
+    }
+
+    #[test]
+    fn test_send_shutdown_no_op_when_disconnected() {
+        // send_shutdown is fire-and-forget; with no client fd it must not
+        // touch any socket, and most importantly must not panic.
+        let state = AgentState::new();
+        state.send_shutdown(); // no panic = pass
+    }
+
+    #[test]
+    fn test_agent_message_heartbeat_serde_roundtrip() {
+        // Mirror of the JSON the in-guest agent emits. If the schema drifts
+        // (field rename, type change) the listener will silently drop every
+        // heartbeat — caught here at compile/test time.
+        let json = r#"{"type":"Heartbeat","active":true,"load_avg_1m":0.5,"mem_pressure_pct":1.0,"mem_available_pct":85.0,"process_count":42,"uptime_secs":120}"#;
+        let msg: AgentMessage = serde_json::from_str(json).expect("heartbeat parses");
+        match msg {
+            AgentMessage::Heartbeat {
+                active,
+                process_count,
+                uptime_secs,
+                ..
+            } => {
+                assert!(active);
+                assert_eq!(process_count, 42);
+                assert_eq!(uptime_secs, 120);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_message_unknown_type_is_rejected() {
+        // serde must reject unknown discriminators rather than picking a
+        // default variant — otherwise a malicious guest could spoof an
+        // ExecResult by sending a typo'd type.
+        let bad = r#"{"type":"NotARealType","x":1}"#;
+        let result: Result<AgentMessage, _> = serde_json::from_str(bad);
+        assert!(result.is_err());
+    }
+}

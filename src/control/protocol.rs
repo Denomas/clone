@@ -609,4 +609,65 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"error\""));
     }
+
+    // --- Sync framing path (used by the per-VM control socket) -------------
+
+    #[test]
+    fn test_sync_frame_roundtrip() {
+        let req = Request::ListVms;
+        let mut buf: Vec<u8> = Vec::new();
+        write_frame_sync(&mut buf, &req).expect("write_frame_sync ok");
+
+        // first 4 bytes = LE length, remaining = JSON body.
+        let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        assert_eq!(len, buf.len() - 4);
+
+        let mut cur = std::io::Cursor::new(buf);
+        let decoded: Request = read_frame_sync(&mut cur).expect("read_frame_sync ok");
+        assert!(matches!(decoded, Request::ListVms));
+    }
+
+    #[test]
+    fn test_sync_read_rejects_oversize_frame_header() {
+        // Hand-craft a frame whose declared length is just past MAX_FRAME_SIZE.
+        // A real malicious client would send this to make the VMM allocate
+        // ~MAX_FRAME_SIZE+1 bytes before realizing.
+        let mut buf = Vec::with_capacity(4);
+        buf.extend_from_slice(&(MAX_FRAME_SIZE + 1).to_le_bytes());
+        let mut cur = std::io::Cursor::new(buf);
+        let result: Result<Request, _> = read_frame_sync(&mut cur);
+        match result {
+            Err(ProtocolError::FrameTooLarge(size)) => assert_eq!(size, MAX_FRAME_SIZE + 1),
+            other => panic!("expected FrameTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sync_read_empty_stream_is_connection_closed() {
+        let buf: Vec<u8> = Vec::new();
+        let mut cur = std::io::Cursor::new(buf);
+        let result: Result<Request, _> = read_frame_sync(&mut cur);
+        match result {
+            Err(ProtocolError::ConnectionClosed) => {}
+            other => panic!("expected ConnectionClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sync_write_rejects_oversize_payload() {
+        // Any payload whose JSON serialization exceeds MAX_FRAME_SIZE must be
+        // refused at write-time so the receiver never sees a malformed header.
+        // We inflate the message via a giant args vector on the Exec request.
+        let huge = "x".repeat(MAX_FRAME_SIZE as usize); // ~1 MiB string
+        let req = Request::Exec {
+            command: "/bin/true".to_string(),
+            args: vec![huge],
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        let result = write_frame_sync(&mut buf, &req);
+        match result {
+            Err(ProtocolError::FrameTooLarge(_)) => {}
+            other => panic!("expected FrameTooLarge, got {other:?}"),
+        }
+    }
 }

@@ -816,4 +816,104 @@ mod tests {
             libc::close(fd);
         }
     }
+
+    #[test]
+    fn test_hdr_read_from_rejects_short_buffer() {
+        // Anything shorter than HDR_SIZE (44 bytes) must be rejected so the
+        // unaligned ptr::read_unaligned never reads past the slice. Guarantees
+        // a malicious guest sending a truncated TX packet can't trigger UB.
+        for n in 0..HDR_SIZE {
+            let buf = vec![0u8; n];
+            assert!(VsockHdr::read_from(&buf).is_none(), "short read at len={n}");
+        }
+        let exact = vec![0u8; HDR_SIZE];
+        assert!(VsockHdr::read_from(&exact).is_some());
+    }
+
+    #[test]
+    fn test_hdr_write_then_read_roundtrip() {
+        let hdr = VsockHdr {
+            src_cid: 2u64.to_le(),
+            dst_cid: 99u64.to_le(),
+            src_port: 9999u32.to_le(),
+            dst_port: 12345u32.to_le(),
+            len: 17u32.to_le(),
+            type_: 1u16.to_le(),
+            op: 5u16.to_le(),
+            flags: 0,
+            buf_alloc: 65536u32.to_le(),
+            fwd_cnt: 42u32.to_le(),
+        };
+        let mut buf = vec![0u8; HDR_SIZE];
+        let n = hdr.write_to(&mut buf);
+        assert_eq!(n, HDR_SIZE);
+        let parsed = VsockHdr::read_from(&buf).expect("roundtrip");
+        assert_eq!(u64::from_le(parsed.src_cid), 2);
+        assert_eq!(u64::from_le(parsed.dst_cid), 99);
+        assert_eq!(u32::from_le(parsed.src_port), 9999);
+        assert_eq!(u32::from_le(parsed.dst_port), 12345);
+        assert_eq!(u32::from_le(parsed.len), 17);
+        assert_eq!(u16::from_le(parsed.op), 5);
+        assert_eq!(u32::from_le(parsed.buf_alloc), 65536);
+        assert_eq!(u32::from_le(parsed.fwd_cnt), 42);
+    }
+
+    #[test]
+    fn test_hdr_write_to_short_buffer_returns_zero() {
+        let hdr = VsockHdr::default();
+        let mut tiny = vec![0u8; HDR_SIZE - 1];
+        assert_eq!(hdr.write_to(&mut tiny), 0);
+    }
+
+    #[test]
+    fn test_peer_free_uses_saturating_sub() {
+        // peer_buf_alloc - (tx_cnt - peer_fwd_cnt). When the wrapping_sub of
+        // (tx_cnt - peer_fwd_cnt) is greater than peer_buf_alloc — i.e. our
+        // accounting drifted past the peer's window — saturating_sub must
+        // clamp to zero, not wrap around to a near-u32::MAX "free credit"
+        // value that would let us flood the peer.
+        let conn = VsockConn {
+            guest_port: 1,
+            host_port: 1,
+            peer_buf_alloc: 100,
+            peer_fwd_cnt: 0,
+            tx_cnt: 1_000_000, // way past peer_buf_alloc
+            buf_alloc: 0,
+            fwd_cnt: 0,
+        };
+        assert_eq!(conn.peer_free(), 0);
+    }
+
+    #[test]
+    fn test_peer_free_normal_case() {
+        let conn = VsockConn {
+            guest_port: 1,
+            host_port: 1,
+            peer_buf_alloc: 1024,
+            peer_fwd_cnt: 256,
+            tx_cnt: 512,
+            buf_alloc: 0,
+            fwd_cnt: 0,
+        };
+        // peer has consumed (512-256)=256 of its 1024 buffer → 768 free.
+        assert_eq!(conn.peer_free(), 768);
+    }
+
+    #[test]
+    fn test_peer_free_after_wrap() {
+        // tx_cnt wraps below peer_fwd_cnt; the wrapping_sub yields a huge
+        // u32 close to u32::MAX, then saturating_sub against a small
+        // peer_buf_alloc must give 0.
+        let conn = VsockConn {
+            guest_port: 1,
+            host_port: 1,
+            peer_buf_alloc: 100,
+            peer_fwd_cnt: 50,
+            tx_cnt: 0, // wrapped
+            buf_alloc: 0,
+            fwd_cnt: 0,
+        };
+        // wrapping_sub(0 - 50) is u32::MAX - 49; saturating_sub clamps to 0.
+        assert_eq!(conn.peer_free(), 0);
+    }
 }
