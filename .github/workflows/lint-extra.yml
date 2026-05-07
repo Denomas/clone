@@ -151,6 +151,7 @@ jobs:
     outputs:
       table_md: ${{ steps.ratchet.outputs.table_md }}
       total_line: ${{ steps.totals.outputs.total_line }}
+      have_base: ${{ steps.ratchet.outputs.have_base }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -180,30 +181,61 @@ jobs:
           path: |
             lcov.info
             coverage-summary.txt
-          retention-days: 14
+          retention-days: 30
+
+      - name: Fetch base-branch lcov.info
+        # On pull_request runs, pull the latest successful Lint extras
+        # run on the base branch and unpack its 'coverage-report'
+        # artifact so the ratchet step below can also render a
+        # 'Δ base' column. Best-effort: any failure leaves base values
+        # blank and the ratchet falls back to the floor-only column.
+        if: github.event_name == 'pull_request'
+        id: base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          base_ref="${{ github.base_ref }}"
+          repo="${{ github.repository }}"
+          wf_id=$(gh api "repos/$repo/actions/workflows/lint-extra.yml" --jq '.id')
+          base_run=$(gh api "repos/$repo/actions/workflows/$wf_id/runs?branch=$base_ref&status=success&per_page=1" --jq '.workflow_runs[0].id')
+          if [ -z "$base_run" ] || [ "$base_run" = "null" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          art_id=$(gh api "repos/$repo/actions/runs/$base_run/artifacts" --jq '.artifacts[] | select(.name=="coverage-report") | .id' | head -1)
+          if [ -z "$art_id" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p /tmp/base
+          gh api -H 'Accept: application/vnd.github+json' "repos/$repo/actions/artifacts/$art_id/zip" > /tmp/base/c.zip
+          unzip -o /tmp/base/c.zip -d /tmp/base >/dev/null 2>&1
+          if [ -f /tmp/base/lcov.info ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enforce per-file ratchet floor
         # Reads .github/coverage-floor.txt and fails if any listed file
         # has dropped below its recorded floor. Floors only ratchet up:
         # when a PR genuinely raises coverage, the same PR raises the
         # floor and the new level becomes the new minimum.
         id: ratchet
+        env:
+          BASE_AVAILABLE: ${{ steps.base.outputs.available }}
         run: |
           set -euo pipefail
           floor_file=.github/coverage-floor.txt
           fail=0
+          have_base=0
+          [ "${BASE_AVAILABLE:-false}" = "true" ] && [ -f /tmp/base/lcov.info ] && have_base=1
 
-          # Build the markdown table while we walk the floor list, so we
-          # can pass it to the aggregator unchanged.
-          : > /tmp/cov_table.md
-          {
-            echo "| File | Floor | Current | Δ |"
-            echo "|---|---:|---:|---:|"
-          } >> /tmp/cov_table.md
-
-          while IFS=$'\t' read -r path floor; do
-            case "$path" in ''|'#'*) continue ;; esac
-            [ -z "${floor:-}" ] && continue
-            pct=$(awk -v f="$path" '
+          # Reusable awk that prints "<line-cov-percent>" for one file in lcov.info.
+          pct_for_file() {
+            local f="$1" lcov="$2"
+            awk -v f="$f" '
               BEGIN { inside=0; cov=0; tot=0 }
               /^SF:/ {
                 if (index($0, f) > 0) { inside = 1 } else { inside = 0 }
@@ -218,32 +250,66 @@ jobs:
               END {
                 if (tot == 0) { print 0 } else { printf "%d", cov*100/tot }
               }
-            ' lcov.info)
+            ' "$lcov"
+          }
+
+          # Build the markdown table while we walk the floor list, so we
+          # can pass it to the aggregator unchanged.
+          : > /tmp/cov_table.md
+          if [ "$have_base" = "1" ]; then
+            {
+              echo "| File | Floor | Current | Δ floor | Δ base |"
+              echo "|---|---:|---:|---:|---:|"
+            } >> /tmp/cov_table.md
+          else
+            {
+              echo "| File | Floor | Current | Δ floor |"
+              echo "|---|---:|---:|---:|"
+            } >> /tmp/cov_table.md
+          fi
+
+          while IFS=$'\t' read -r path floor; do
+            case "$path" in ''|'#'*) continue ;; esac
+            [ -z "${floor:-}" ] && continue
+            pct=$(pct_for_file "$path" lcov.info)
             pct=${pct:-0}
             delta=$((pct - floor))
             if [ "$pct" -lt "$floor" ]; then
               echo "::error file=$path::coverage ${pct}% < floor ${floor}%"
               fail=1
-              icon="❌"
+              floor_icon="❌"
             else
-              icon="✅"
+              floor_icon="✅"
               echo "  $path: ${pct}% (floor=${floor}%, +${delta})"
             fi
-            sign=""
-            [ "$delta" -gt 0 ] && sign="+"
+            floor_sign=""
+            [ "$delta" -gt 0 ] && floor_sign="+"
             # Use <code> instead of Markdown backticks: the table_md
             # output is later expanded via the dollar-double-braces
             # syntax into a shell run block, so any backtick in the
             # value would be re-evaluated as a command substitution
             # and the cell would render empty.
-            echo "| <code>$path</code> | ${floor}% | ${pct}% | ${icon} ${sign}${delta} |" >> /tmp/cov_table.md
+            row="| <code>$path</code> | ${floor}% | ${pct}% | ${floor_icon} ${floor_sign}${delta} |"
+            if [ "$have_base" = "1" ]; then
+              base_pct=$(pct_for_file "$path" /tmp/base/lcov.info)
+              base_pct=${base_pct:-0}
+              base_delta=$((pct - base_pct))
+              base_sign=""
+              [ "$base_delta" -gt 0 ] && base_sign="+"
+              base_icon="="
+              [ "$base_delta" -gt 0 ] && base_icon="📈"
+              [ "$base_delta" -lt 0 ] && base_icon="📉"
+              row="${row} ${base_icon} ${base_sign}${base_delta} |"
+            fi
+            echo "$row" >> /tmp/cov_table.md
           done < "$floor_file"
 
-          # Expose the rendered table to downstream jobs.
+          # Expose the rendered table + base availability to the aggregator.
           {
             echo "table_md<<MARKDOWN_EOF"
             cat /tmp/cov_table.md
             echo "MARKDOWN_EOF"
+            echo "have_base=$have_base"
           } >> "$GITHUB_OUTPUT"
 
           if [ "$fail" -eq 1 ]; then
@@ -310,6 +376,10 @@ jobs:
             echo "${{ needs.coverage.outputs.table_md }}"
             echo
             echo "Coverage artifact: [coverage-report]($run_url#artifacts)"
+            if [ "${{ needs.coverage.outputs.have_base }}" != "1" ] && [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo
+              echo "_Base-branch lcov.info unavailable for this run; Δ-base column omitted (no successful master Lint extras run with metrics yet)._"
+            fi
             echo
             echo "<sub>Updated by \`lint-extra.yml\` · sticky-comment header \`lint-extras\`.</sub>"
           } > /tmp/body.md

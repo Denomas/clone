@@ -184,6 +184,29 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/clone
           retention-days: 7
 
+      - name: Write metrics manifest
+        # Snapshot the CI build's headline metrics into a tiny JSON file
+        # so the summary aggregator on a future PR run can fetch this
+        # run's artifact and compute deltas vs base. Uploaded to a
+        # dedicated 30-day artifact so it survives the binary's 7-day
+        # retention window.
+        run: |
+          cat > /tmp/metrics-build.json <<EOF
+          {
+            "tests_passed": ${{ steps.test_metrics.outputs.tests_passed }},
+            "tests_failed": ${{ steps.test_metrics.outputs.tests_failed }},
+            "tests_ignored": ${{ steps.test_metrics.outputs.tests_ignored }},
+            "tests_filtered": ${{ steps.test_metrics.outputs.tests_filtered }},
+            "binary_size": ${{ steps.bin_size.outputs.size }}
+          }
+          EOF
+      - name: Upload metrics manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: metrics-build
+          path: /tmp/metrics-build.json
+          retention-days: 30
+
       - name: Job summary
         if: always()
         run: |
@@ -274,6 +297,51 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - name: Fetch base-branch metrics
+        # On pull_request runs, find the most recent successful CI run
+        # on the PR's base branch and download its 'metrics-build'
+        # artifact. The aggregator step below uses these numbers to
+        # render delta lines (tests / binary size) so reviewers see
+        # what this PR actually moves. Best-effort: any failure here
+        # leaves the values at the placeholder 'n/a' and the delta
+        # rendering simply omits the delta column.
+        if: github.event_name == 'pull_request'
+        id: base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          base_ref="${{ github.base_ref }}"
+          repo="${{ github.repository }}"
+          # Workflow numeric ID (so we don't depend on the display name).
+          wf_id=$(gh api "repos/$repo/actions/workflows/build.yml" --jq '.id')
+          base_run=$(gh api "repos/$repo/actions/workflows/$wf_id/runs?branch=$base_ref&status=success&per_page=1" --jq '.workflow_runs[0].id')
+          if [ -z "$base_run" ] || [ "$base_run" = "null" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          art_id=$(gh api "repos/$repo/actions/runs/$base_run/artifacts" --jq '.artifacts[] | select(.name=="metrics-build") | .id' | head -1)
+          if [ -z "$art_id" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p /tmp/base
+          gh api -H 'Accept: application/vnd.github+json' "repos/$repo/actions/artifacts/$art_id/zip" > /tmp/base/m.zip
+          unzip -o /tmp/base/m.zip -d /tmp/base >/dev/null 2>&1 || true
+          if [ ! -f /tmp/base/metrics-build.json ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Extract base values via jq.
+          base_tests=$(jq -r .tests_passed /tmp/base/metrics-build.json)
+          base_size=$(jq -r .binary_size /tmp/base/metrics-build.json)
+          {
+            echo "available=true"
+            echo "base_run_id=$base_run"
+            echo "tests_passed=$base_tests"
+            echo "binary_size=$base_size"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Aggregate job results
         id: agg
         run: |
@@ -298,6 +366,25 @@ jobs:
 
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
+          base_avail="${{ steps.base.outputs.available }}"
+
+          # Compute delta strings (with sign) when base is available.
+          tests_delta=""
+          size_delta=""
+          if [ "$base_avail" = "true" ]; then
+            cur_tests=${{ needs.build.outputs.tests_passed }}
+            cur_size=${{ needs.build.outputs.binary_size }}
+            base_tests=${{ steps.base.outputs.tests_passed }}
+            base_size=${{ steps.base.outputs.binary_size }}
+            t=$((cur_tests - base_tests))
+            s=$((cur_size - base_size))
+            ts=""; [ "$t" -gt 0 ] && ts="+"
+            ss=""; [ "$s" -gt 0 ] && ss="+"
+            sh=$(numfmt --to=iec --suffix=B --format='%.2f' "${s#-}" 2>/dev/null || echo "${s} B")
+            sgn=""; [ "$s" -gt 0 ] && sgn="+"; [ "$s" -lt 0 ] && sgn="-"
+            tests_delta=" (${ts}${t} vs base)"
+            size_delta=" (${sgn}${sh} vs base)"
+          fi
 
           # Compose markdown body.
           {
@@ -316,11 +403,15 @@ jobs:
             echo "| Security audit  | $(icon $security_r) \`$security_r\` |"
             echo
             if [ "$build_r" = "success" ]; then
-              echo "**Tests:** ${{ needs.build.outputs.tests_passed }} passed · ${{ needs.build.outputs.tests_failed }} failed · ${{ needs.build.outputs.tests_ignored }} ignored · ${{ needs.build.outputs.tests_filtered }} filtered out (in ${{ needs.build.outputs.tests_duration }})"
+              echo "**Tests:** ${{ needs.build.outputs.tests_passed }} passed${tests_delta} · ${{ needs.build.outputs.tests_failed }} failed · ${{ needs.build.outputs.tests_ignored }} ignored · ${{ needs.build.outputs.tests_filtered }} filtered out (in ${{ needs.build.outputs.tests_duration }})"
               echo
-              echo "**Binary:** \`target/x86_64-unknown-linux-musl/release/clone\` — ${{ needs.build.outputs.binary_size_human }} ([download artifact]($run_url#artifacts))"
+              echo "**Binary:** \`target/x86_64-unknown-linux-musl/release/clone\` — ${{ needs.build.outputs.binary_size_human }}${size_delta} ([download artifact]($run_url#artifacts))"
             else
               echo "_Build & Test did not finish successfully; see job log for details._"
+            fi
+            if [ "$base_avail" != "true" ] && [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo
+              echo "_Base-branch metrics unavailable for this run (no successful master CI run with metrics yet); deltas omitted._"
             fi
             echo
             echo "<sub>Updated by \`build.yml\` · sticky-comment header \`ci-build\`.</sub>"
